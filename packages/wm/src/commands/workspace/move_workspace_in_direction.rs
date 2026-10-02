@@ -34,19 +34,7 @@ pub fn move_workspace_in_direction(
       state,
     )?;
 
-    let windows = workspace
-      .descendants()
-      .filter_map(|descendant| descendant.as_window_container().ok());
-
-    for window in windows {
-      window.set_has_pending_dpi_adjustment(true);
-
-      window.set_floating_placement(
-        window
-          .floating_placement()
-          .translate_to_center(&workspace.to_rect()?),
-      );
-    }
+    adjust_windows_to_new_monitor(workspace)?;
 
     state
       .pending_sync
@@ -87,6 +75,29 @@ pub fn move_workspace_in_direction(
     state.emit_event(WmEvent::WorkspaceUpdated {
       updated_workspace: workspace.to_dto()?,
     });
+  }
+
+  Ok(())
+}
+
+/// Adjusts the windows of a workspace that was just moved to another
+/// monitor: their DPI is re-applied on the next redraw, and floating
+/// windows are re-centered within the workspace.
+pub(super) fn adjust_windows_to_new_monitor(
+  workspace: &Workspace,
+) -> anyhow::Result<()> {
+  let windows = workspace
+    .descendants()
+    .filter_map(|descendant| descendant.as_window_container().ok());
+
+  for window in windows {
+    window.set_has_pending_dpi_adjustment(true);
+
+    window.set_floating_placement(
+      window
+        .floating_placement()
+        .translate_to_center(&workspace.to_rect()?),
+    );
   }
 
   Ok(())

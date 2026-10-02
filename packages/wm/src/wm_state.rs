@@ -4,7 +4,9 @@ use anyhow::Context;
 use tokio::sync::mpsc::{self};
 use tracing::warn;
 use uuid::Uuid;
-use wm_common::{BindingModeConfig, HideCorner, WindowState, WmEvent};
+use wm_common::{
+  BindingModeConfig, HideCorner, Ordinal, WindowState, WmEvent,
+};
 use wm_platform::{
   Direction, Dispatcher, Display, NativeWindow, Point, Rect,
 };
@@ -217,6 +219,24 @@ impl WmState {
       .monitors()
       .into_iter()
       .find(|monitor| monitor.native() == *native_display)
+  }
+
+  /// Gets the monitor after (or before) the given one, in the order of the
+  /// root container, wrapping at both ends.
+  ///
+  /// Returns `None` if there is no other monitor.
+  pub fn monitor_at_ordinal(
+    &self,
+    monitor: &Monitor,
+    ordinal: Ordinal,
+  ) -> Option<Monitor> {
+    let monitors = self.monitors();
+    let index = monitors
+      .iter()
+      .position(|other| other.id() == monitor.id())?;
+
+    Some(monitors[ordinal.wrapping_step(index, monitors.len())].clone())
+      .filter(|target| target.id() != monitor.id())
   }
 
   /// Gets the closest monitor in a given direction.

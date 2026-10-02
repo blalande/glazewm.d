@@ -336,6 +336,11 @@ keybindings:
   - commands: ['move-workspace --direction down']
     bindings: ['alt+shift+s']
 
+  # Swap the focused workspace with the one displayed on the next monitor.
+  # Use `swap-workspace --workspace <name>` to swap with a given workspace.
+  - commands: ['swap-workspace --next-monitor']
+    bindings: ['alt+shift+x']
+
   # Move focused window to a workspace defined in `workspaces` config.
   - commands: ['move --workspace 1', 'focus --workspace 1']
     bindings: ['alt+shift+1']

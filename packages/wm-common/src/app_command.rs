@@ -164,6 +164,10 @@ pub enum InvokeCommand {
     #[clap(long)]
     direction: Direction,
   },
+  /// Swaps the focused workspace with another one on a different monitor,
+  /// so that each takes the other's place. Focus follows the focused
+  /// workspace.
+  SwapWorkspace(InvokeSwapWorkspaceCommand),
   Position(InvokePositionCommand),
   Resize(InvokeResizeCommand),
   UpdateWorkspaceConfig {
@@ -500,9 +504,58 @@ impl InvokeMoveCommand {
   }
 }
 
+#[derive(Args, Clone, Debug, PartialEq, Serialize)]
+#[group(skip)]
+#[command(group(ArgGroup::new("target").required(true).multiple(false)))]
+pub struct InvokeSwapWorkspaceCommand {
+  /// Name of the workspace to swap with. It must be active on another
+  /// monitor.
+  #[clap(long, group = "target")]
+  pub workspace: Option<String>,
+
+  /// Swap with the workspace displayed on the next monitor.
+  #[clap(long, group = "target")]
+  pub next_monitor: bool,
+
+  /// Swap with the workspace displayed on the previous monitor.
+  #[clap(long, group = "target")]
+  pub prev_monitor: bool,
+}
+
+impl InvokeSwapWorkspaceCommand {
+  /// Gets the monitor to swap with, relative to the focused one, if the
+  /// target is given as `--next-monitor` or `--prev-monitor`.
+  #[must_use]
+  pub fn monitor_ordinal(&self) -> Option<Ordinal> {
+    Ordinal::from_flags(self.next_monitor, self.prev_monitor)
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn parses_swap_workspace_targets() {
+    let Ok(InvokeCommand::SwapWorkspace(args)) =
+      parse("swap-workspace --workspace 3")
+    else {
+      panic!("Expected a swap-workspace command.");
+    };
+    assert_eq!(args.workspace.as_deref(), Some("3"));
+    assert_eq!(args.monitor_ordinal(), None);
+
+    let Ok(InvokeCommand::SwapWorkspace(args)) =
+      parse("swap-workspace --prev-monitor")
+    else {
+      panic!("Expected a swap-workspace command.");
+    };
+    assert_eq!(args.monitor_ordinal(), Some(Ordinal::Previous));
+
+    assert!(parse("swap-workspace").is_err());
+    assert!(parse("swap-workspace --next-monitor --prev-monitor").is_err());
+    assert!(parse("swap-workspace --next-monitor --workspace 3").is_err());
+  }
 
   fn parse(args: &str) -> Result<InvokeCommand, clap::Error> {
     InvokeCommand::try_parse_from(

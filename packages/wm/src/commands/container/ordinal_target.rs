@@ -47,24 +47,20 @@ pub fn ordinal_target(
     Ordinal::Previous => index == 0,
   };
 
-  let monitors = state.monitors();
+  let target_monitor = (cross_monitor && is_past_end)
+    .then(|| window.monitor())
+    .flatten()
+    .and_then(|monitor| state.monitor_at_ordinal(&monitor, ordinal));
 
-  if !(cross_monitor && is_past_end && monitors.len() > 1) {
+  let Some(target_monitor) = target_monitor else {
     return Ok(OrdinalTarget::InWorkspace(
       ordinal.wrapping_step(index, count),
     ));
-  }
+  };
 
-  let monitor = window.monitor().context("No monitor.")?;
-  let monitor_index = monitors
-    .iter()
-    .position(|other| other.id() == monitor.id())
-    .context("Monitor of the window is not in the root container.")?;
-
-  let target_workspace = monitors
-    [ordinal.wrapping_step(monitor_index, monitors.len())]
-  .displayed_workspace()
-  .context("Target monitor has no displayed workspace.")?;
+  let target_workspace = target_monitor
+    .displayed_workspace()
+    .context("Target monitor has no displayed workspace.")?;
 
   let index = match ordinal {
     Ordinal::Next => 0,

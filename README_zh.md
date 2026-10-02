@@ -361,6 +361,8 @@ binding_modes:
 
 平铺窗口是有序的，新窗口会插入到当前聚焦窗口之后。`focus --next` 和 `focus --previous` 在它们之间切换，`move --next` 和 `move --previous` 将聚焦窗口与相邻窗口交换，`promote` 使其成为主窗口。这些命令在工作区末端会循环，与 `--cross-monitor` 一起使用时则会继续到下一个或上一个显示器。
 
+`swap-workspace` 将聚焦的工作区与另一个显示器上的工作区交换，使两者互换位置。另一个工作区可以通过 `--workspace <name>` 指定，或通过 `--next-monitor`、`--prev-monitor` 指定为相邻显示器上显示的工作区。焦点会跟随原本聚焦的工作区。
+
 平铺方向命令（`toggle-tiling-direction` 和 `set-tiling-direction`）以及 `tiling-direction` 查询已被移除。使用它们的快捷键需要替换，例如替换为 `cycle-layout`。
 
 Zebar 内置的 GlazeWM 提供程序仍依赖已移除的 `tiling-direction` 查询，因此无法再使用。请改用 [`glazewm-dynamic`](./resources/zebar/glazewm-dynamic) 小部件包：它直接通过 IPC 与 GlazeWM 通信，并显示当前工作区的布局（点击可切换布局）。将该文件夹复制到 `~/.glzr/zebar/`，然后在 Zebar 设置中选择该包。

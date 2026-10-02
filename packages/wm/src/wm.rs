@@ -33,7 +33,7 @@ use crate::{
     workspace::{
       adjust_master_count, adjust_master_ratio, cycle_layout, flip_layout,
       focus_workspace, move_workspace_in_direction, set_layout,
-      update_workspace_config,
+      swap_workspace, update_workspace_config,
     },
   },
   events::{
@@ -462,6 +462,12 @@ impl WindowManager {
           subject_container.workspace().context("No workspace.")?;
 
         move_workspace_in_direction(&workspace, direction, state, config)
+      }
+      InvokeCommand::SwapWorkspace(args) => {
+        let workspace =
+          subject_container.workspace().context("No workspace.")?;
+
+        swap_workspace(&workspace, args, state, config)
       }
       InvokeCommand::Position(args) => {
         match subject_container.as_window_container() {

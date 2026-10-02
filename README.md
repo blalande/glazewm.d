@@ -370,6 +370,8 @@ The layout can be changed while GlazeWM is running with `set-layout <layout>` or
 
 Tiling windows are ordered, and new windows are inserted after the focused one. `focus --next` and `focus --previous` step through them, `move --next` and `move --previous` swap the focused window with its neighbour, and `promote` makes it the master window. All of these wrap around at the ends of the workspace, or continue onto the next or previous monitor when combined with `--cross-monitor`.
 
+`swap-workspace` swaps the focused workspace with a workspace on another monitor, so that each takes the other's place. The other workspace is given with `--workspace <name>`, or as the workspace displayed on the adjacent monitor with `--next-monitor` or `--prev-monitor`. Focus follows the focused workspace.
+
 The tiling direction commands (`toggle-tiling-direction` and `set-tiling-direction`) and the `tiling-direction` query have been removed. Keybindings that use them need to be replaced, for example with `cycle-layout`.
 
 Zebar's built-in GlazeWM provider still relies on the removed `tiling-direction` query, so it no longer works. Use the [`glazewm-dynamic`](./resources/zebar/glazewm-dynamic) widget pack instead: it talks to GlazeWM over IPC directly and shows the layout of the displayed workspace (click it to cycle the layout). Copy the folder to `~/.glzr/zebar/`, then select the pack in Zebar's settings.
