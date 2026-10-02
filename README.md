@@ -372,6 +372,8 @@ Tiling windows are ordered, and new windows are inserted after the focused one. 
 
 The tiling direction commands (`toggle-tiling-direction` and `set-tiling-direction`) and the `tiling-direction` query have been removed. Keybindings that use them need to be replaced, for example with `cycle-layout`.
 
+Zebar's built-in GlazeWM provider still relies on the removed `tiling-direction` query, so it no longer works. Use the [`glazewm-dynamic`](./resources/zebar/glazewm-dynamic) widget pack instead: it talks to GlazeWM over IPC directly and shows the layout of the displayed workspace (click it to cycle the layout). Copy the folder to `~/.glzr/zebar/`, then select the pack in Zebar's settings.
+
 **Q: How do I create a rule for `<insert application>`?**
 
 To match a specific application, you need a command to execute and either the window's process name, title, or class name. For example, if you use Flow-Launcher and want to make the settings window float, you can do the following:

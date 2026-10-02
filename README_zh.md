@@ -363,6 +363,8 @@ binding_modes:
 
 平铺方向命令（`toggle-tiling-direction` 和 `set-tiling-direction`）以及 `tiling-direction` 查询已被移除。使用它们的快捷键需要替换，例如替换为 `cycle-layout`。
 
+Zebar 内置的 GlazeWM 提供程序仍依赖已移除的 `tiling-direction` 查询，因此无法再使用。请改用 [`glazewm-dynamic`](./resources/zebar/glazewm-dynamic) 小部件包：它直接通过 IPC 与 GlazeWM 通信，并显示当前工作区的布局（点击可切换布局）。将该文件夹复制到 `~/.glzr/zebar/`，然后在 Zebar 设置中选择该包。
+
 **问：如何为 `<插入应用程序>` 创建规则？**
 
 要匹配特定应用程序，您需要一个要执行的命令以及窗口的进程名称、标题或类名称。例如，如果您使用 Flow-Launcher 并希望设置窗口浮动，您可以执行以下操作：
