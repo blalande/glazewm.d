@@ -2,8 +2,8 @@ use anyhow::Context;
 #[cfg(target_os = "windows")]
 use wm_common::WindowEffectConfig;
 use wm_common::{
-  CursorJumpTrigger, DisplayState, HideCorner, HideMethod, UniqueExt,
-  WindowState, WmEvent,
+  CursorJumpTrigger, DisplayState, HideCorner, HideMethod, Layout,
+  UniqueExt, WindowState, WmEvent,
 };
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
@@ -12,7 +12,7 @@ use wm_platform::{CornerStyle, OpacityValue};
 use wm_platform::{Rect, WindowZOrder};
 
 use crate::{
-  models::{Container, WindowContainer},
+  models::{Container, WindowContainer, Workspace},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -247,12 +247,23 @@ fn redraw_containers(
       _ => WindowZOrder::Normal,
     };
 
+    let should_show = should_show(window, &workspace);
+    let is_shown = matches!(
+      window.display_state(),
+      DisplayState::Showing | DisplayState::Shown
+    );
+
+    // A focus change can flip which windows should be shown (e.g. in the
+    // `Monocle` layout), so a visibility mismatch also needs a redraw.
+    let needs_redraw =
+      windows_to_redraw.contains(window) || should_show != is_shown;
+
     // Set the z-order of the window.
     //
     // NOTE: macOS doesn't have a robust public API for setting the z-order
     // of a window. See `NativeWindow::raise` for more details.
     #[cfg(target_os = "windows")]
-    if should_bring_to_front && !windows_to_redraw.contains(window) {
+    if should_bring_to_front && !needs_redraw {
       tracing::info!("Updating window z-order: {window}");
 
       if let Err(err) = window.native().set_z_order(&z_order) {
@@ -262,14 +273,14 @@ fn redraw_containers(
 
     // Skip updating the window's position if it only required a z-order
     // change.
-    if !windows_to_redraw.contains(window) {
+    if !needs_redraw {
       continue;
     }
 
     // Transition display state depending on whether window will be
     // shown or hidden.
     window.set_display_state(
-      match (window.display_state(), workspace.is_displayed()) {
+      match (window.display_state(), should_show) {
         (DisplayState::Hidden | DisplayState::Hiding, true) => {
           DisplayState::Showing
         }
@@ -333,6 +344,20 @@ fn redraw_containers(
   }
 
   Ok(())
+}
+
+/// Whether the window should be visible on screen.
+///
+/// Windows are hidden when their workspace isn't displayed. In the
+/// `Monocle` layout, only the workspace's focused tiling window is shown,
+/// since the others would otherwise show through behind it.
+fn should_show(window: &WindowContainer, workspace: &Workspace) -> bool {
+  workspace.is_displayed()
+    && (workspace.layout() != Layout::Monocle
+      || !matches!(window.state(), WindowState::Tiling)
+      || workspace
+        .focused_tiling_window()
+        .is_some_and(|focused| focused.id() == window.id()))
 }
 
 fn reposition_window(
@@ -616,4 +641,48 @@ fn apply_transparency_effect(
   };
 
   _ = window.native().set_transparency(transparency);
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::{
+    commands::container::set_focused_descendant,
+    models::{Monitor, TilingWindow},
+  };
+
+  #[test]
+  fn should_show_only_the_focused_tiling_window_in_monocle() {
+    let windows = (0..2)
+      .map(|_| TilingWindow::mock().call())
+      .collect::<Vec<_>>();
+
+    let workspace = Workspace::mock()
+      .layout(Layout::Monocle)
+      .tiling_windows(windows.clone())
+      .call();
+
+    let hidden_workspace = Workspace::mock().call();
+
+    let _monitor = Monitor::mock()
+      .workspaces(vec![workspace.clone(), hidden_workspace.clone()])
+      .call();
+
+    set_focused_descendant(&windows[1].clone().into(), None);
+
+    let shown = |window: &TilingWindow| {
+      should_show(&window.clone().into(), &workspace)
+    };
+
+    assert!(!shown(&windows[0]));
+    assert!(shown(&windows[1]));
+
+    // Other layouts show every window.
+    workspace.set_layout(Layout::Columns);
+    assert!(shown(&windows[0]));
+
+    // Windows on a workspace that isn't displayed are hidden.
+    assert!(!hidden_workspace.is_displayed());
+    assert!(!should_show(&windows[0].clone().into(), &hidden_workspace));
+  }
 }
