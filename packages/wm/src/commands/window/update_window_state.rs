@@ -3,12 +3,9 @@ use tracing::{info, warn};
 use wm_common::WindowState;
 
 use crate::{
-  commands::container::{
-    move_container_within_tree, replace_container, resize_tiling_container,
-  },
-  models::{Container, InsertionTarget, WindowContainer},
-  traits::{CommonGetters, TilingSizeGetters, WindowGetters},
-  user_config::UserConfig,
+  commands::container::{move_container_within_tree, replace_container},
+  models::WindowContainer,
+  traits::{CommonGetters, WindowGetters},
   wm_state::WmState,
 };
 
@@ -21,7 +18,6 @@ pub fn update_window_state(
   window: WindowContainer,
   target_state: WindowState,
   state: &mut WmState,
-  config: &UserConfig,
 ) -> anyhow::Result<WindowContainer> {
   if window.state() == target_state {
     return Ok(window);
@@ -30,7 +26,7 @@ pub fn update_window_state(
   info!("Updating window state: {:?}.", target_state);
 
   match target_state {
-    WindowState::Tiling => set_tiling(&window, state, config),
+    WindowState::Tiling => set_tiling(&window, state),
     _ => set_non_tiling(window, target_state, state),
   }
 }
@@ -39,7 +35,6 @@ pub fn update_window_state(
 fn set_tiling(
   window: &WindowContainer,
   state: &mut WmState,
-  config: &UserConfig,
 ) -> anyhow::Result<WindowContainer> {
   let window = window
     .as_non_tiling_window()
@@ -49,38 +44,10 @@ fn set_tiling(
   let workspace =
     window.workspace().context("Window has no workspace.")?;
 
-  // Check whether insertion target is still valid.
-  let insertion_target =
-    window.insertion_target().filter(|insertion_target| {
-      insertion_target
-        .target_parent
-        .workspace()
-        .is_some_and(|workspace| workspace.is_displayed())
-    });
-
-  // Get the position in the tree to insert the new tiling window. This
-  // will be the window's previous tiling position if it has one, or
-  // instead beside the last focused tiling window in the workspace.
-  let (target_parent, target_index) = insertion_target
-    .as_ref()
-    .map(|insertion_target| {
-      (
-        insertion_target.target_parent.clone(),
-        insertion_target.target_index,
-      )
-    })
-    // Fallback to the last focused tiling window within the workspace.
-    .or_else(|| {
-      let focused_window = workspace
-        .descendant_focus_order()
-        .find(Container::is_tiling_window)?;
-
-      Some((focused_window.parent()?, focused_window.index() + 1))
-    })
-    // Default to inserting at the end of the workspace.
-    .unwrap_or((workspace.clone().into(), workspace.child_count()));
-
-  let tiling_window = window.to_tiling(config.value.gaps.clone());
+  // Insert the window after the last focused tiling window of the
+  // workspace, or at the end if there is none.
+  let target_index = workspace.index_after_focused_tiling_window();
+  let tiling_window = window.to_tiling();
 
   // Replace the original window with the created tiling window.
   replace_container(
@@ -91,26 +58,16 @@ fn set_tiling(
 
   move_container_within_tree(
     &tiling_window.clone().into(),
-    &target_parent,
+    &workspace.clone().into(),
     target_index,
     state,
   )?;
 
-  #[allow(clippy::cast_precision_loss)]
-  if let Some(insertion_target) = &insertion_target {
-    let size_scale = (insertion_target.prev_sibling_count + 1) as f32
-      / (tiling_window.tiling_siblings().count() + 1) as f32;
-
-    // Scale the window's previous size based on the current number of
-    // siblings. E.g. if the window was 0.5 with 1 sibling, and now has 2
-    // siblings, scale to 0.5 * (2/3) to maintain proportional sizing.
-    let target_size = insertion_target.prev_tiling_size * size_scale;
-    resize_tiling_container(&tiling_window.clone().into(), target_size);
-  }
-
+  // The whole workspace needs to be redrawn, since adding a tiling window
+  // moves all the others.
   state
     .pending_sync
-    .queue_containers_to_redraw(target_parent.tiling_children())
+    .queue_container_to_redraw(workspace.clone())
     .queue_workspace_to_reorder(workspace);
 
   Ok(tiling_window.into())
@@ -162,28 +119,7 @@ fn set_non_tiling(
       Ok(window.into())
     }
     WindowContainer::TilingWindow(window) => {
-      let parent = window.parent().context("No parent")?;
-
-      let non_tiling_window = window.to_non_tiling(
-        target_state.clone(),
-        Some(InsertionTarget {
-          target_parent: parent.clone(),
-          target_index: window.index(),
-          prev_tiling_size: window.tiling_size(),
-          prev_sibling_count: window.tiling_siblings().count(),
-        }),
-      );
-
-      // Non-tiling windows should always be direct children of the
-      // workspace.
-      if parent != workspace.clone().into() {
-        move_container_within_tree(
-          &window.clone().into(),
-          &workspace.clone().into(),
-          workspace.child_count(),
-          state,
-        )?;
-      }
+      let non_tiling_window = window.to_non_tiling(target_state.clone());
 
       replace_container(
         &non_tiling_window.clone().into(),
@@ -194,10 +130,135 @@ fn set_non_tiling(
       state
         .pending_sync
         .queue_container_to_redraw(non_tiling_window.clone())
-        .queue_containers_to_redraw(workspace.tiling_children())
+        .queue_container_to_redraw(workspace.clone())
         .queue_workspace_to_reorder(workspace);
 
       Ok(non_tiling_window.into())
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use tokio::sync::mpsc;
+  use wm_common::FloatingStateConfig;
+  use wm_platform::Dispatcher;
+
+  use super::*;
+  use crate::{
+    commands::container::set_focused_descendant,
+    models::{Monitor, NonTilingWindow, TilingWindow, Workspace},
+  };
+
+  fn mock_state() -> WmState {
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (exit_tx, _exit_rx) = mpsc::unbounded_channel();
+
+    WmState::new(Dispatcher::mock(), event_tx, exit_tx)
+  }
+
+  fn floating() -> WindowState {
+    WindowState::Floating(FloatingStateConfig::default())
+  }
+
+  fn setup(
+    tiling_count: usize,
+  ) -> (Workspace, Vec<TilingWindow>, NonTilingWindow) {
+    let windows = (0..tiling_count)
+      .map(|_| TilingWindow::mock().call())
+      .collect::<Vec<_>>();
+    let floating_window = NonTilingWindow::mock().call();
+    let workspace = Workspace::mock()
+      .tiling_windows(windows.clone())
+      .non_tiling_windows(vec![floating_window.clone()])
+      .call();
+    // The workspace keeps its monitor alive through its parent.
+    let _monitor =
+      Monitor::mock().workspaces(vec![workspace.clone()]).call();
+
+    (workspace, windows, floating_window)
+  }
+
+  /// IDs of the distinct windows queued for redraw.
+  fn redrawn_ids(
+    state: &WmState,
+  ) -> std::collections::HashSet<uuid::Uuid> {
+    state
+      .windows_to_redraw()
+      .iter()
+      .map(CommonGetters::id)
+      .collect()
+  }
+
+  fn tiling_ids(workspace: &Workspace) -> Vec<uuid::Uuid> {
+    workspace
+      .tiling_children()
+      .map(|window| window.id())
+      .collect()
+  }
+
+  #[test]
+  fn a_window_becoming_tiling_is_inserted_after_the_focused_one() {
+    let mut state = mock_state();
+    let (workspace, windows, floating_window) = setup(3);
+    set_focused_descendant(&windows[1].clone().into(), None);
+
+    let tiling = update_window_state(
+      floating_window.into(),
+      WindowState::Tiling,
+      &mut state,
+    )
+    .unwrap();
+
+    assert_eq!(
+      tiling_ids(&workspace),
+      vec![
+        windows[0].id(),
+        windows[1].id(),
+        tiling.id(),
+        windows[2].id()
+      ]
+    );
+    assert!(tiling.is_tiling_window());
+
+    // The whole workspace is redrawn, not only the new window.
+    assert_eq!(redrawn_ids(&state).len(), 4);
+  }
+
+  #[test]
+  fn a_window_becoming_tiling_is_appended_without_tiling_windows() {
+    let mut state = mock_state();
+    let (workspace, _, floating_window) = setup(0);
+
+    let tiling = update_window_state(
+      floating_window.into(),
+      WindowState::Tiling,
+      &mut state,
+    )
+    .unwrap();
+
+    assert_eq!(tiling_ids(&workspace), vec![tiling.id()]);
+  }
+
+  #[test]
+  fn a_tiling_window_becoming_floating_leaves_the_tiling_order() {
+    let mut state = mock_state();
+    let (workspace, windows, _) = setup(3);
+
+    let window = update_window_state(
+      windows[1].clone().into(),
+      floating(),
+      &mut state,
+    )
+    .unwrap();
+
+    assert!(!window.is_tiling_window());
+    assert_eq!(
+      tiling_ids(&workspace),
+      vec![windows[0].id(), windows[2].id()]
+    );
+
+    // The remaining tiling windows are redrawn along with the window.
+    assert_eq!(redrawn_ids(&state).len(), 4);
   }
 }

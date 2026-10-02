@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::ContainerDto;
-use crate::{Layout, LayoutParams, TilingDirection};
+use crate::{Layout, LayoutParams};
 
 /// User-friendly representation of a workspace.
 ///
@@ -22,7 +22,6 @@ pub struct WorkspaceDto {
   pub height: i32,
   pub x: i32,
   pub y: i32,
-  pub tiling_direction: TilingDirection,
   pub layout: Layout,
   pub layout_params: LayoutParams,
 }

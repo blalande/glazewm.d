@@ -339,6 +339,8 @@ A binding mode can be enabled with `wm-enable-binding-mode --name <NAME>` and di
 ```yaml
 binding_modes:
   # When enabled, the focused window can be resized via arrow keys or HJKL.
+  # Tiling windows can only be resized in width, which resizes the master
+  # area.
   - name: "resize"
     keybindings:
       - commands: ["resize --width -2%"]
@@ -362,9 +364,13 @@ Right-click the GlazeWM icon in the system tray and select "Run on system startu
 
 **Q: How can I create `<insert layout>`?**
 
-You can create custom layouts by changing the tiling direction with `alt+v`. This changes where the next window is placed _in relation to the current window_. If the current window's direction is horizontal, the new window will be placed to the right of it. If it is vertical, it will be placed below it. This also applies when moving windows; the tiling direction of the stationary window will affect where the moved window will be placed.
+Tiling windows are arranged automatically by the layout of their workspace: `master_stack`, `columns`, `rows`, `monocle`, `grid` or `dwindle`. The default layout is set with `general.default_layout`, and can be overridden per workspace with the `layout` key of a `workspaces` entry.
 
-Community-made scripts like [Dutch-Raptor/GAT-GWM](https://github.com/Dutch-Raptor/GAT-GWM) and [burgr033/GlazeWM-autotiling-python](https://github.com/burgr033/GlazeWM-autotiling-python) can be used to automatically change the tiling direction. Native support for automatic layouts isn't _currently_ supported.
+The layout can be changed while GlazeWM is running with `set-layout <layout>` or `cycle-layout` (`alt+v` in the default config). The `adjust-master-ratio`, `adjust-master-count` and `flip-layout` commands tune the layout, and resizing a tiling window's width changes the master ratio.
+
+Tiling windows are ordered, and new windows are inserted after the focused one. `focus --next` and `focus --previous` step through them, `move --next` and `move --previous` swap the focused window with its neighbour, and `promote` makes it the master window. All of these wrap around at the ends of the workspace, or continue onto the next or previous monitor when combined with `--cross-monitor`.
+
+The tiling direction commands (`toggle-tiling-direction` and `set-tiling-direction`) and the `tiling-direction` query have been removed. Keybindings that use them need to be replaced, for example with `cycle-layout`.
 
 **Q: How do I create a rule for `<insert application>`?**
 

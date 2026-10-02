@@ -7,14 +7,12 @@ use crate::{
     container::set_focused_descendant, window::update_window_state,
   },
   traits::WindowGetters,
-  user_config::UserConfig,
   wm_state::WmState,
 };
 
 pub fn handle_window_minimized(
   native_window: &NativeWindow,
   state: &mut WmState,
-  config: &UserConfig,
 ) -> anyhow::Result<()> {
   let found_window = state.window_from_native(native_window);
 
@@ -33,7 +31,6 @@ pub fn handle_window_minimized(
         window.clone(),
         WindowState::Minimized,
         state,
-        config,
       )?;
 
       // Clear the drag state, as a window can be minimized while

@@ -3331,7 +3331,6 @@ dependencies = [
 name = "wm-common"
 version = "0.0.0"
 dependencies = [
- "anyhow",
  "clap",
  "regex",
  "serde",

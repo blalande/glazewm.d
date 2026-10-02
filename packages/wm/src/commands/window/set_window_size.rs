@@ -3,11 +3,9 @@ use wm_common::WindowState;
 use wm_platform::{LengthValue, Rect};
 
 use crate::{
-  commands::container::resize_tiling_container,
+  commands::workspace::resize_master_ratio,
   models::{NonTilingWindow, TilingWindow, WindowContainer},
-  traits::{
-    CommonGetters, PositionGetters, TilingSizeGetters, WindowGetters,
-  },
+  traits::{CommonGetters, PositionGetters, WindowGetters},
   wm_state::WmState,
 };
 
@@ -23,7 +21,13 @@ pub fn set_window_size(
 ) -> anyhow::Result<()> {
   match window {
     WindowContainer::TilingWindow(window) => {
-      set_tiling_window_size(&window, target_width, target_height, state)?;
+      if target_height.is_some() {
+        tracing::debug!("Ignoring height resize of a tiling window.");
+      }
+
+      if let Some(target_width) = target_width {
+        set_tiling_window_width(&window, &target_width, state)?;
+      }
     }
     WindowContainer::NonTilingWindow(window) => {
       if matches!(window.state(), WindowState::Floating(_)) {
@@ -40,62 +44,22 @@ pub fn set_window_size(
   Ok(())
 }
 
-fn set_tiling_window_size(
+/// Updates the width of a tiling window.
+///
+/// The size of a tiling window is dictated by its workspace's layout, so
+/// the width can only be changed by resizing the master area (see
+/// `resize_master_ratio`). Relative widths (e.g. percentages) are relative
+/// to the workspace.
+fn set_tiling_window_width(
   window: &TilingWindow,
-  target_width: Option<LengthValue>,
-  target_height: Option<LengthValue>,
+  target_width: &LengthValue,
   state: &mut WmState,
 ) -> anyhow::Result<()> {
-  if let Some(target_width) = target_width {
-    set_tiling_window_length(window, &target_width, true, state)?;
-  }
+  let workspace = window.workspace().context("No workspace.")?;
+  let target_width_px =
+    target_width.to_px(workspace.to_rect()?.width(), None);
 
-  if let Some(target_height) = target_height {
-    set_tiling_window_length(window, &target_height, false, state)?;
-  }
-
-  Ok(())
-}
-
-/// Updates either the width or height of a tiling window.
-fn set_tiling_window_length(
-  window: &TilingWindow,
-  target_length: &LengthValue,
-  is_width_resize: bool,
-  state: &mut WmState,
-) -> anyhow::Result<()> {
-  // When resizing a tiling window, the container to resize can actually be
-  // an ancestor split container.
-  let container_to_resize = window.container_to_resize(is_width_resize)?;
-
-  if let Some(container_to_resize) = container_to_resize {
-    let parent = container_to_resize.parent().context("No parent.")?;
-    let (horizontal_gap, vertical_gap) =
-      container_to_resize.inner_gaps()?;
-
-    #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-    let parent_length = if is_width_resize {
-      parent.to_rect()?.width()
-        - horizontal_gap * window.tiling_siblings().count() as i32
-    } else {
-      parent.to_rect()?.height()
-        - vertical_gap * window.tiling_siblings().count() as i32
-    };
-
-    // Convert the target length to a tiling size.
-    let tiling_size = target_length.to_percentage(parent_length);
-
-    // Skip the resize if the window is already at the target size.
-    if container_to_resize.tiling_size() - tiling_size != 0. {
-      resize_tiling_container(&container_to_resize, tiling_size);
-
-      state
-        .pending_sync
-        .queue_containers_to_redraw(parent.tiling_children());
-    }
-  }
-
-  Ok(())
+  resize_master_ratio(window, target_width_px, state)
 }
 
 fn set_floating_window_size(

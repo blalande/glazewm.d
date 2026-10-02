@@ -61,22 +61,6 @@ impl PendingSync {
     self
   }
 
-  pub fn queue_containers_to_redraw<I, T>(
-    &mut self,
-    containers: I,
-  ) -> &mut Self
-  where
-    I: IntoIterator<Item = T>,
-    T: Into<Container>,
-  {
-    for container in containers {
-      let container: Container = container.into();
-      self.containers_to_redraw.insert(container.id(), container);
-    }
-
-    self
-  }
-
   pub fn dequeue_container_from_redraw<T>(
     &mut self,
     container: T,

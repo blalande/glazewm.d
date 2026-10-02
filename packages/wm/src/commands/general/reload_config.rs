@@ -8,7 +8,7 @@ use wm_platform::NativeWindowWindowsExt;
 
 use crate::{
   commands::{window::run_window_rules, workspace::sort_workspaces},
-  traits::{CommonGetters, TilingSizeGetters, WindowGetters},
+  traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
   wm::WindowManager,
   wm_state::WmState,
@@ -35,7 +35,7 @@ pub fn reload_config(
 
   update_workspace_configs(state, config)?;
 
-  update_container_gaps(state, config);
+  update_workspace_gaps(state, config);
 
   #[cfg(target_os = "windows")]
   update_window_effects(&old_config, state, config)?;
@@ -152,17 +152,8 @@ fn update_workspace_configs(
   Ok(())
 }
 
-/// Updates outer gap of workspaces and inner gaps of tiling containers.
-fn update_container_gaps(state: &mut WmState, config: &UserConfig) {
-  let tiling_containers = state
-    .root_container
-    .self_and_descendants()
-    .filter_map(|container| container.as_tiling_container().ok());
-
-  for container in tiling_containers {
-    container.set_gaps_config(config.value.gaps.clone());
-  }
-
+/// Updates the outer and inner gaps of workspaces.
+fn update_workspace_gaps(state: &mut WmState, config: &UserConfig) {
   for workspace in state.workspaces() {
     workspace.set_gaps_config(config.value.gaps.clone());
   }

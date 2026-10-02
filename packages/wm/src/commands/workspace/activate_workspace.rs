@@ -1,12 +1,12 @@
 use anyhow::Context;
 use tracing::info;
-use wm_common::{TilingDirection, WmEvent, WorkspaceConfig};
+use wm_common::{WmEvent, WorkspaceConfig};
 
 use super::sort_workspaces;
 use crate::{
   commands::container::attach_container,
   models::{Monitor, Workspace},
-  traits::{CommonGetters, PositionGetters},
+  traits::CommonGetters,
   user_config::UserConfig,
   wm_state::WmState,
 };
@@ -49,18 +49,9 @@ pub fn activate_workspace(
     })
     .context("Failed to get a target monitor for the workspace.")?;
 
-  let monitor_rect = target_monitor.to_rect()?;
-
-  let tiling_direction = if monitor_rect.height() > monitor_rect.width() {
-    TilingDirection::Vertical
-  } else {
-    TilingDirection::Horizontal
-  };
-
   let workspace = Workspace::new(
     workspace_config.clone(),
     config.value.gaps.clone(),
-    tiling_direction,
     workspace_config
       .layout
       .unwrap_or(config.value.general.default_layout),

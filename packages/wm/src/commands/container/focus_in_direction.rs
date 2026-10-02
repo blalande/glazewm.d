@@ -1,27 +1,28 @@
 use anyhow::Context;
-use wm_common::{TilingDirection, WindowState};
+use wm_common::WindowState;
 use wm_platform::Direction;
 
 use super::set_focused_descendant;
 use crate::{
-  models::{Container, TilingContainer},
-  traits::{CommonGetters, TilingDirectionGetters, WindowGetters},
+  models::{Container, Workspace},
+  traits::{CommonGetters, WindowGetters},
   wm_state::WmState,
 };
 
+/// Focuses a container in the given direction.
+///
+/// Tiling windows are ordered rather than spatial (see `focus_ordinal`),
+/// so for them (and for fullscreen windows and workspaces) the direction
+/// only selects the monitor to focus. Floating windows focus the next
+/// floating window of their workspace.
 pub fn focus_in_direction(
   origin_container: &Container,
   direction: &Direction,
   state: &mut WmState,
 ) -> anyhow::Result<()> {
   let focus_target = match origin_container {
-    Container::TilingWindow(_) => {
-      // If a suitable focus target isn't found in the current workspace,
-      // attempt to find a workspace in the given direction.
-      tiling_focus_target(origin_container, direction)?.map_or_else(
-        || workspace_focus_target(origin_container, direction, state),
-        |container| Ok(Some(container)),
-      )?
+    Container::TilingWindow(_) | Container::Workspace(_) => {
+      workspace_focus_target(origin_container, direction, state)?
     }
     Container::NonTilingWindow(ref non_tiling_window) => {
       match non_tiling_window.state() {
@@ -33,9 +34,6 @@ pub fn focus_in_direction(
         }
         _ => None,
       }
-    }
-    Container::Workspace(_) => {
-      workspace_focus_target(origin_container, direction, state)?
     }
     _ => None,
   };
@@ -77,62 +75,12 @@ fn floating_focus_target(
   }
 }
 
-/// Gets a focus target within the current workspace. Traverse upwards from
-/// the origin container to find an adjacent container that can be focused.
-fn tiling_focus_target(
-  origin_container: &Container,
-  direction: &Direction,
-) -> anyhow::Result<Option<Container>> {
-  let tiling_direction = TilingDirection::from_direction(direction);
-  let mut origin_or_ancestor = origin_container.clone();
-
-  // Traverse upwards from the focused container. Stop searching when a
-  // workspace is encountered.
-  while !origin_or_ancestor.is_workspace() {
-    let parent = origin_or_ancestor
-      .parent()
-      .and_then(|parent| parent.as_direction_container().ok())
-      .context("No direction container.")?;
-
-    // Skip if the tiling direction doesn't match.
-    if parent.tiling_direction() != tiling_direction {
-      origin_or_ancestor = parent.into();
-      continue;
-    }
-
-    // Get the next/prev tiling sibling depending on the tiling direction.
-    let focus_target = match direction {
-      Direction::Up | Direction::Left => origin_or_ancestor
-        .prev_siblings()
-        .find_map(|c| c.as_tiling_container().ok()),
-      _ => origin_or_ancestor
-        .next_siblings()
-        .find_map(|c| c.as_tiling_container().ok()),
-    };
-
-    match focus_target {
-      Some(target) => {
-        // Return once a suitable focus target is found.
-        return Ok(match target {
-          TilingContainer::TilingWindow(_) => Some(target.into()),
-          TilingContainer::Split(split) => split
-            .descendant_in_direction(&direction.inverse())
-            .map(Into::into),
-        });
-      }
-      None => origin_or_ancestor = parent.into(),
-    }
-  }
-
-  Ok(None)
-}
-
-/// Gets a focus target outside of the current workspace in the given
-/// direction.
+/// Gets a focus target on the monitor in the given direction.
 ///
-/// This will descend into the workspace in the given direction, and will
-/// always return a tiling container. This makes it different from the
-/// `focus_workspace` command with `FocusWorkspaceTarget::Direction`.
+/// This focuses a fullscreen window if the workspace has one in focus,
+/// otherwise the last focused tiling window, and will not return a
+/// floating window. This makes it different from the `focus_workspace`
+/// command with `WorkspaceTarget::Direction`.
 fn workspace_focus_target(
   origin_container: &Container,
   direction: &Direction,
@@ -156,11 +104,10 @@ fn workspace_focus_target(
 
   let focus_target = focused_fullscreen
     .or_else(|| {
-      target_workspace.as_ref().and_then(|workspace| {
-        workspace
-          .descendant_in_direction(&direction.inverse())
-          .map(Into::into)
-      })
+      target_workspace
+        .as_ref()
+        .and_then(Workspace::focused_tiling_window)
+        .map(Into::into)
     })
     .or(target_workspace.map(Into::into));
 

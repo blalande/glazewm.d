@@ -29,7 +29,7 @@ pub fn handle_window_minimize_ended(
         .prev_state()
         .unwrap_or(WindowState::default_from_config(&config.value));
 
-      update_window_state(window.clone(), target_state, state, config)?;
+      update_window_state(window.clone(), target_state, state)?;
     }
   }
 

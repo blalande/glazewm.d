@@ -11,8 +11,7 @@ use wm_platform::{NativeWindow, Rect};
 
 use crate::{
   commands::{
-    container::{flatten_split_container, move_container_within_tree},
-    window::update_window_state,
+    container::move_container_within_tree, window::update_window_state,
   },
   events::handle_window_moved_or_resized_end,
   models::{Monitor, NonTilingWindow, WindowContainer},
@@ -311,7 +310,6 @@ pub fn handle_window_moved_or_resized(
           ..fullscreen_state
         }),
         state,
-        config,
       )?;
 
       if is_maximized {
@@ -337,7 +335,6 @@ pub fn handle_window_moved_or_resized(
           window.clone(),
           window.toggled_state(window.state(), config),
           state,
-          config,
         )?;
       }
       WindowState::Floating(_) => {
@@ -386,8 +383,6 @@ pub fn update_floating_window_position(
     tracing::info!(
       "Floating window moved to new workspace: {updated_workspace}",
     );
-
-    window.set_insertion_target(None);
 
     move_container_within_tree(
       &window.clone().into(),
@@ -442,11 +437,15 @@ fn update_drag_state(
     is_move
   };
 
-  // Transition window to be floating while it's being dragged, but only
-  // after it has been moved at least 10px from its initial position. The
-  // 10px threshold is to account for small movements that may be
-  // accidental.
-  if is_move && !matches!(window.state(), WindowState::Floating(_)) {
+  // Transition fullscreen windows to be floating while they are being
+  // dragged, but only after they have been moved at least 10px from their
+  // initial position. The 10px threshold is to account for small
+  // movements that may be accidental.
+  //
+  // Tiling windows stay tiling while they are dragged, so that the other
+  // windows do not move around. They are dropped in
+  // `handle_window_moved_or_resized_end`.
+  if is_move && matches!(window.state(), WindowState::Fullscreen(_)) {
     let move_distance = frame_position
       .center_point()
       .distance_between(&active_drag.initial_position.center_point());
@@ -463,12 +462,6 @@ fn update_drag_state(
     );
 
     if move_distance >= 10.0 || is_maximized {
-      let parent = window.parent().context("No parent")?;
-
-      let is_fullscreen =
-        matches!(window.state(), WindowState::Fullscreen(_))
-          && !is_maximized;
-
       let window = update_window_state(
         window.clone(),
         WindowState::Floating(FloatingStateConfig {
@@ -476,35 +469,17 @@ fn update_drag_state(
           ..config.value.window_behavior.state_defaults.floating
         }),
         state,
-        config,
       )?;
 
-      // `update_window_state` automatically adds the window for redraw,
-      // which we don't want in this case. However, for fullscreen windows,
-      // we do actually want it to be resized initially so that it's
-      // easier to move around while dragging.
-      if !is_fullscreen {
+      // `update_window_state` automatically adds the window for redraw.
+      // For maximized windows, that is not wanted. However, for
+      // non-maximized fullscreen windows, we do actually want it to be
+      // resized initially so that it's easier to move around while
+      // dragging.
+      if is_maximized {
         state
           .pending_sync
           .dequeue_container_from_redraw(window.clone());
-      }
-
-      // Flatten the parent split container if it only contains the window.
-      // TODO: Consider doing this to `move_container_within_tree`, so that
-      // the behavior is consistent.
-      if let Some(split_parent) = parent.as_split() {
-        if split_parent.child_count() == 1 {
-          flatten_split_container(split_parent.clone())?;
-
-          // Hacky fix to redraw siblings after flattening. The parent is
-          // queued for redraw from the state change, which gets detached
-          // on flatten.
-          // TODO: Change `queue_containers_to_redraw` to iterate over its
-          // descendant windows and store those instead.
-          state
-            .pending_sync
-            .queue_containers_to_redraw(window.tiling_siblings());
-        }
       }
     }
   }

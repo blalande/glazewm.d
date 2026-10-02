@@ -17,8 +17,7 @@ use wm_platform::{
 use crate::{
   commands::{
     container::{
-      focus_container_by_id, focus_in_direction, set_tiling_direction,
-      toggle_tiling_direction,
+      focus_container_by_id, focus_in_direction, focus_ordinal,
     },
     general::{
       cycle_focus, disable_binding_mode, enable_binding_mode,
@@ -26,9 +25,10 @@ use crate::{
     },
     monitor::focus_monitor,
     window::{
-      ignore_window, move_window_in_direction, move_window_to_workspace,
-      resize_window, set_window_position, set_window_size,
-      update_window_state, WindowPositionTarget,
+      ignore_window, move_window_by_ordinal, move_window_in_direction,
+      move_window_to_workspace, promote_window, resize_window,
+      set_window_position, set_window_size, update_window_state,
+      WindowPositionTarget,
     },
     workspace::{
       adjust_master_count, adjust_master_ratio, cycle_layout, flip_layout,
@@ -130,7 +130,7 @@ impl WindowManager {
           config,
         ),
         WindowEvent::Minimized { window, .. } => {
-          handle_window_minimized(&window, state, config)
+          handle_window_minimized(&window, state)
         }
         WindowEvent::MinimizeEnded { window, .. } => {
           handle_window_minimize_ended(&window, state, config)
@@ -194,7 +194,7 @@ impl WindowManager {
     for command in commands {
       WindowManager::run_command(
         command,
-        current_subject_container.clone(),
+        &current_subject_container,
         state,
         config,
       )?;
@@ -218,7 +218,7 @@ impl WindowManager {
   #[allow(clippy::too_many_lines)]
   pub fn run_command(
     command: &InvokeCommand,
-    subject_container: Container,
+    subject_container: &Container,
     state: &mut WmState,
     config: &mut UserConfig,
   ) -> anyhow::Result<()> {
@@ -266,7 +266,13 @@ impl WindowManager {
       }
       InvokeCommand::Focus(args) => {
         if let Some(direction) = &args.direction {
-          focus_in_direction(&subject_container, direction, state)?;
+          focus_in_direction(subject_container, direction, state)?;
+        }
+
+        if let (Some(ordinal), Some(window)) =
+          (args.ordinal(), subject_container.as_tiling_window())
+        {
+          focus_ordinal(window, ordinal, args.cross_monitor, state)?;
         }
 
         if let Some(direction) = &args.workspace_in_direction {
@@ -341,9 +347,16 @@ impl WindowManager {
         match subject_container.as_window_container() {
           Ok(window) => {
             if let Some(direction) = &args.direction {
-              move_window_in_direction(
+              move_window_in_direction(window.clone(), direction, state)?;
+            }
+
+            if let (Some(ordinal), Some(window)) =
+              (args.ordinal(), window.as_tiling_window())
+            {
+              move_window_by_ordinal(
                 window.clone(),
-                direction,
+                ordinal,
+                args.cross_monitor,
                 state,
                 config,
               )?;
@@ -353,6 +366,7 @@ impl WindowManager {
               move_window_to_workspace(
                 window.clone(),
                 WorkspaceTarget::Direction(direction.clone()),
+                None,
                 state,
                 config,
               )?;
@@ -362,6 +376,7 @@ impl WindowManager {
               move_window_to_workspace(
                 window.clone(),
                 WorkspaceTarget::Name(name.clone()),
+                None,
                 state,
                 config,
               )?;
@@ -371,6 +386,7 @@ impl WindowManager {
               move_window_to_workspace(
                 window.clone(),
                 WorkspaceTarget::NextActive,
+                None,
                 state,
                 config,
               )?;
@@ -380,6 +396,7 @@ impl WindowManager {
               move_window_to_workspace(
                 window.clone(),
                 WorkspaceTarget::PreviousActive,
+                None,
                 state,
                 config,
               )?;
@@ -389,6 +406,7 @@ impl WindowManager {
               move_window_to_workspace(
                 window.clone(),
                 WorkspaceTarget::Next,
+                None,
                 state,
                 config,
               )?;
@@ -398,6 +416,7 @@ impl WindowManager {
               move_window_to_workspace(
                 window.clone(),
                 WorkspaceTarget::Previous,
+                None,
                 state,
                 config,
               )?;
@@ -407,6 +426,7 @@ impl WindowManager {
               move_window_to_workspace(
                 window.clone(),
                 WorkspaceTarget::Recent,
+                None,
                 state,
                 config,
               )?;
@@ -416,6 +436,7 @@ impl WindowManager {
               move_window_to_workspace(
                 window.clone(),
                 WorkspaceTarget::NextActiveInMonitor,
+                None,
                 state,
                 config,
               )?;
@@ -425,6 +446,7 @@ impl WindowManager {
               move_window_to_workspace(
                 window,
                 WorkspaceTarget::PreviousActiveInMonitor,
+                None,
                 state,
                 config,
               )?;
@@ -506,7 +528,6 @@ impl WindowManager {
                 .unwrap_or(floating_defaults.shown_on_top),
             }),
             state,
-            config,
           )?;
 
           // Allow size and position to be set if window has not previously
@@ -557,7 +578,6 @@ impl WindowManager {
                 .unwrap_or(fullscreen_defaults.shown_on_top),
             }),
             state,
-            config,
           )?;
 
           Ok(())
@@ -571,7 +591,6 @@ impl WindowManager {
               window.clone(),
               WindowState::Minimized,
               state,
-              config,
             )?;
 
             Ok(())
@@ -582,12 +601,7 @@ impl WindowManager {
       InvokeCommand::SetTiling => {
         match subject_container.as_window_container() {
           Ok(window) => {
-            update_window_state(
-              window,
-              WindowState::Tiling,
-              state,
-              config,
-            )?;
+            update_window_state(window, WindowState::Tiling, state)?;
 
             Ok(())
           }
@@ -661,7 +675,6 @@ impl WindowManager {
             window.clone(),
             window.toggled_state(target_state, config),
             state,
-            config,
           )?;
 
           if !window.has_custom_floating_placement() && centered {
@@ -696,7 +709,6 @@ impl WindowManager {
             window.clone(),
             window.toggled_state(target_state, config),
             state,
-            config,
           )?;
 
           Ok(())
@@ -710,7 +722,6 @@ impl WindowManager {
               window.clone(),
               window.toggled_state(WindowState::Minimized, config),
               state,
-              config,
             )?;
 
             Ok(())
@@ -725,7 +736,6 @@ impl WindowManager {
               window.clone(),
               window.toggled_state(WindowState::Tiling, config),
               state,
-              config,
             )?;
 
             Ok(())
@@ -733,30 +743,22 @@ impl WindowManager {
           _ => Ok(()),
         }
       }
-      InvokeCommand::ToggleTilingDirection => {
-        toggle_tiling_direction(subject_container, state, config)
-      }
-      InvokeCommand::SetTilingDirection { tiling_direction } => {
-        set_tiling_direction(
-          subject_container,
-          state,
-          config,
-          tiling_direction,
-        )
-      }
       InvokeCommand::SetLayout { layout } => {
-        set_layout(&subject_container, *layout, state)
+        set_layout(subject_container, *layout, state)
       }
-      InvokeCommand::CycleLayout => {
-        cycle_layout(&subject_container, state)
-      }
+      InvokeCommand::CycleLayout => cycle_layout(subject_container, state),
       InvokeCommand::AdjustMasterRatio { delta } => {
-        adjust_master_ratio(&subject_container, *delta, state)
+        adjust_master_ratio(subject_container, *delta, state)
       }
       InvokeCommand::AdjustMasterCount { delta } => {
-        adjust_master_count(&subject_container, *delta, state)
+        adjust_master_count(subject_container, *delta, state)
       }
-      InvokeCommand::FlipLayout => flip_layout(&subject_container, state),
+      InvokeCommand::FlipLayout => flip_layout(subject_container, state),
+      InvokeCommand::Promote => match subject_container.as_tiling_window()
+      {
+        Some(window) => promote_window(window, state),
+        None => Ok(()),
+      },
       InvokeCommand::WmCycleFocus {
         omit_floating,
         omit_fullscreen,

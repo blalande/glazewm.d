@@ -1,6 +1,5 @@
 use anyhow::Context;
 use tracing::info;
-use wm_common::WindowState;
 
 use crate::{
   commands::{
@@ -13,9 +12,16 @@ use crate::{
   wm_state::WmState,
 };
 
+/// Moves a window to the workspace given by the target.
+///
+/// A tiling window is inserted at `target_index` amongst the tiling
+/// windows of the target workspace (appended if the index is past the last
+/// one). If no index is given, it is inserted after the target workspace's
+/// focused tiling window. Non-tiling windows are always appended.
 pub fn move_window_to_workspace(
   window: WindowContainer,
   target: WorkspaceTarget,
+  target_index: Option<usize>,
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
@@ -69,10 +75,6 @@ pub fn move_window_to_workspace(
       );
     }
 
-    if let WindowContainer::NonTilingWindow(window) = &window {
-      window.set_insertion_target(None);
-    }
-
     // Focus target is `None` if the window is not focused.
     let focus_target = state.focus_target_after_removal(&window);
 
@@ -82,32 +84,22 @@ pub fn move_window_to_workspace(
       target_monitor.descendant_focus_order().next()
     };
 
-    let insertion_sibling = target_workspace
-      .descendant_focus_order()
-      .filter_map(|descendant| descendant.as_window_container().ok())
-      .find(|descendant| descendant.state() == WindowState::Tiling);
+    let insertion_index = if window.is_tiling_window() {
+      target_index.map_or_else(
+        || target_workspace.index_after_focused_tiling_window(),
+        |index| target_workspace.child_index_at_tiling_index(index),
+      )
+    } else {
+      target_workspace.child_count()
+    };
 
     // Insert the window into the target workspace.
-    match (window.is_tiling_window(), insertion_sibling.is_some()) {
-      (true, true) => {
-        if let Some(insertion_sibling) = insertion_sibling {
-          move_container_within_tree(
-            &window.clone().into(),
-            &insertion_sibling.clone().parent().context("No parent.")?,
-            insertion_sibling.index() + 1,
-            state,
-          )?;
-        }
-      }
-      _ => {
-        move_container_within_tree(
-          &window.clone().into(),
-          &target_workspace.clone().into(),
-          target_workspace.child_count(),
-          state,
-        )?;
-      }
-    }
+    move_container_within_tree(
+      &window.clone().into(),
+      &target_workspace.clone().into(),
+      insertion_index,
+      state,
+    )?;
 
     // When moving a focused window within the tree to another workspace,
     // the target workspace will get displayed. If moving the window e.g.
@@ -132,10 +124,12 @@ pub fn move_window_to_workspace(
         state.pending_sync.queue_container_to_redraw(window);
       }
       WindowContainer::TilingWindow(_) => {
+        // Both workspaces need to be fully redrawn, since adding or
+        // removing a tiling window moves all the others.
         state
           .pending_sync
-          .queue_containers_to_redraw(current_workspace.tiling_children())
-          .queue_containers_to_redraw(target_workspace.tiling_children());
+          .queue_container_to_redraw(current_workspace)
+          .queue_container_to_redraw(target_workspace.clone());
       }
     }
 

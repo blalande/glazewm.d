@@ -11,10 +11,7 @@ use wm_platform::Rect;
 
 use crate::{
   impl_common_getters, impl_container_debug,
-  models::{
-    Container, DirectionContainer, Monitor, TilingContainer,
-    WindowContainer,
-  },
+  models::{Container, Monitor, WindowContainer},
   traits::{CommonGetters, PositionGetters},
 };
 

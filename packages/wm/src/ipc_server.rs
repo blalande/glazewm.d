@@ -15,14 +15,12 @@ use wm_common::{
   AppCommand, AppMetadataData, BindingModesData, ClientResponseData,
   ClientResponseMessage, CommandData, EventSubscribeData,
   EventSubscriptionMessage, FocusedData, LayoutData, MonitorsData,
-  QueryCommand, ServerMessage, SubscribableEvent, TilingDirectionData,
-  WindowsData, WmEvent, WorkspacesData, DEFAULT_IPC_PORT,
+  QueryCommand, ServerMessage, SubscribableEvent, WindowsData, WmEvent,
+  WorkspacesData, DEFAULT_IPC_PORT,
 };
 
 use crate::{
-  traits::{CommonGetters, TilingDirectionGetters},
-  user_config::UserConfig,
-  wm::WindowManager,
+  traits::CommonGetters, user_config::UserConfig, wm::WindowManager,
 };
 
 pub struct IpcServer {
@@ -227,18 +225,6 @@ impl IpcServer {
             version: env!("VERSION_NUMBER").to_string(),
           })
         }
-        QueryCommand::TilingDirection => {
-          let direction_container = wm
-            .state
-            .focused_container()
-            .and_then(|focused| focused.direction_container())
-            .context("No direction container.")?;
-
-          ClientResponseData::TilingDirection(TilingDirectionData {
-            direction_container: direction_container.to_dto()?,
-            tiling_direction: direction_container.tiling_direction(),
-          })
-        }
         QueryCommand::Layout => {
           let workspace = wm
             .state
@@ -381,9 +367,6 @@ impl IpcServer {
       WmEvent::MonitorAdded { .. } => SubscribableEvent::MonitorAdded,
       WmEvent::MonitorUpdated { .. } => SubscribableEvent::MonitorUpdated,
       WmEvent::MonitorRemoved { .. } => SubscribableEvent::MonitorRemoved,
-      WmEvent::TilingDirectionChanged { .. } => {
-        SubscribableEvent::TilingDirectionChanged
-      }
       WmEvent::UserConfigChanged { .. } => {
         SubscribableEvent::UserConfigChanged
       }

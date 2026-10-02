@@ -12,8 +12,7 @@ use wm_platform::{Display, Rect};
 use crate::{
   impl_common_getters, impl_container_debug,
   models::{
-    Container, DirectionContainer, NativeMonitorProperties,
-    TilingContainer, WindowContainer, Workspace,
+    Container, NativeMonitorProperties, WindowContainer, Workspace,
   },
   traits::{CommonGetters, PositionGetters},
 };

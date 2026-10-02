@@ -1,7 +1,9 @@
 mod ignore_window;
 mod manage_window;
+mod move_window_by_ordinal;
 mod move_window_in_direction;
 mod move_window_to_workspace;
+mod promote_window;
 mod resize_window;
 mod run_window_rules;
 mod set_window_position;
@@ -11,8 +13,10 @@ mod update_window_state;
 
 pub use ignore_window::*;
 pub use manage_window::*;
+pub use move_window_by_ordinal::*;
 pub use move_window_in_direction::*;
 pub use move_window_to_workspace::*;
+pub use promote_window::*;
 pub use resize_window::*;
 pub use run_window_rules::*;
 pub use set_window_position::*;

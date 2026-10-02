@@ -7,16 +7,15 @@ use ambassador::Delegate;
 use enum_as_inner::EnumAsInner;
 use uuid::Uuid;
 use wm_common::{
-  ActiveDrag, ContainerDto, DisplayState, GapsConfig, TilingDirection,
-  WindowRuleConfig, WindowState,
+  ActiveDrag, ContainerDto, DisplayState, WindowRuleConfig, WindowState,
 };
-use wm_platform::{Direction, NativeWindow, Rect, RectDelta};
+use wm_platform::{NativeWindow, Rect, RectDelta};
 
 #[allow(clippy::wildcard_imports)]
 use crate::{
   models::{
     Monitor, NativeWindowProperties, NonTilingWindow, RootContainer,
-    SplitContainer, TilingWindow, Workspace,
+    TilingWindow, Workspace,
   },
   traits::*,
   user_config::UserConfig,
@@ -36,26 +35,19 @@ use crate::{
 /// # Example
 /// Conversion between the different container types:
 /// ```
-/// use wm::models::{Container, DirectionContainer, SplitContainer, TilingContainer};
-/// use wm::traits::{TilingSizeGetters, TilingDirectionGetters};
+/// use wm::models::{Container, TilingWindow, WindowContainer};
+/// use wm::traits::WindowGetters;
 ///
-/// fn example(split: SplitContainer) {
-///   // Convert a `SplitContainer` into a `Container`
-///   let container: Container = split.into(); // Will be a `Container::Split`
+/// fn example(tiling: TilingWindow) {
+///   // Convert a `TilingWindow` into a `Container`
+///   let container: Container = tiling.into(); // Will be a `Container::TilingWindow`
 ///
-///   // Could also have gone straight to a [TilingContainer] from SplitContainer
-///   // let tiling: TilingContainer = split.into(); // Will be a `TilingContainer::Split`
-///
-///   // Try to convert a [Container] into a sub container type ([TilingContainer] in this case).
-///   let tiling: TilingContainer = container.try_into().unwrap(); // Will be a `TilingContainer::Split`
-///   tiling.tiling_size(); // Can use methods from the `TilingSizeGetters` trait.
-///
-///   // Try to convert a one sub container type into another. ([TilingContainer] to [DirectionContainer] in this case).
-///   let direction: DirectionContainer = tiling.try_into().unwrap(); // Will be a `DirectionContainer::Split`
-///   direction.tiling_direction(); // Can use methods from the `TilingDirectionGetters` trait.
+///   // Try to convert a [Container] into a sub container type ([WindowContainer] in this case).
+///   let window: WindowContainer = container.try_into().unwrap(); // Will be a `WindowContainer::TilingWindow`
+///   window.state(); // Can use methods from the `WindowGetters` trait.
 ///
 ///   // Convert a sub container back into a [Container]
-///   let container: Container = direction.into(); // Will be a `Container::Split`
+///   let container: Container = window.into(); // Will be a `Container::TilingWindow`
 /// }
 /// ```
 #[derive(
@@ -74,13 +66,6 @@ use crate::{
   #[delegate(CommonGetters)]
   #[delegate(PositionGetters)]
 })]
-#[subenum(TilingContainer, {
-  /// Subset of containers that implement the following traits:
-  /// * `CommonGetters`
-  /// * `PositionGetters`
-  /// * `TilingSizeGetters`
-  #[delegate(TilingSizeGetters)]
-})]
 #[subenum(WindowContainer, {
   /// Subset of containers that implement the following traits:
   /// * `CommonGetters`
@@ -88,21 +73,11 @@ use crate::{
   /// * `WindowGetters`
   #[delegate(WindowGetters)]
 })]
-#[subenum(DirectionContainer, {
-  /// Subset of containers that implement the following traits:
-  /// * `CommonGetters`
-  /// * `PositionGetters`
-  /// * `DirectionGetters`
-  #[delegate(TilingDirectionGetters)]
-})]
 pub enum Container {
   Root(RootContainer),
   Monitor(Monitor),
-  #[subenum(DirectionContainer)]
   Workspace(Workspace),
-  #[subenum(TilingContainer, DirectionContainer)]
-  Split(SplitContainer),
-  #[subenum(TilingContainer, WindowContainer)]
+  #[subenum(WindowContainer)]
   TilingWindow(TilingWindow),
   #[subenum(WindowContainer)]
   NonTilingWindow(NonTilingWindow),
@@ -115,14 +90,6 @@ impl PartialEq for Container {
 }
 
 impl Eq for Container {}
-
-impl PartialEq for TilingContainer {
-  fn eq(&self, other: &Self) -> bool {
-    self.id() == other.id()
-  }
-}
-
-impl Eq for TilingContainer {}
 
 impl PartialEq for WindowContainer {
   fn eq(&self, other: &Self) -> bool {
@@ -170,14 +137,6 @@ impl std::fmt::Display for WindowContainer {
     Ok(())
   }
 }
-
-impl PartialEq for DirectionContainer {
-  fn eq(&self, other: &Self) -> bool {
-    self.id() == other.id()
-  }
-}
-
-impl Eq for DirectionContainer {}
 
 /// Implements the `Debug` trait for a given container struct.
 ///

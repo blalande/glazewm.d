@@ -5,8 +5,8 @@
 
 use bon::bon;
 use wm_common::{
-  FloatingStateConfig, GapsConfig, Layout, LayoutParams, TilingDirection,
-  WindowState, WorkspaceConfig,
+  FloatingStateConfig, GapsConfig, Layout, LayoutParams, WindowState,
+  WorkspaceConfig,
 };
 use wm_platform::{Display, NativeWindow, Rect, RectDelta};
 
@@ -14,10 +14,8 @@ use crate::{
   commands::container::attach_container,
   models::{
     Monitor, NativeMonitorProperties, NativeWindowProperties,
-    NonTilingWindow, SplitContainer, TilingContainer, TilingWindow,
-    Workspace,
+    NonTilingWindow, TilingWindow, Workspace,
   },
-  traits::TilingSizeGetters,
 };
 
 pub const MOCK_MONITOR_WIDTH: i32 = 1680;
@@ -158,7 +156,6 @@ impl NonTilingWindow {
       state,
       None,
       mock_border_delta(),
-      None,
       floating_placement,
       false,
       vec![],
@@ -168,35 +165,12 @@ impl NonTilingWindow {
 }
 
 #[bon]
-impl SplitContainer {
-  #[builder]
-  #[allow(clippy::cast_precision_loss)]
-  pub fn mock(
-    #[builder(default = TilingDirection::Horizontal)]
-    tiling_direction: TilingDirection,
-    #[builder(default = GapsConfig::default())] gaps_config: GapsConfig,
-    #[builder(default = vec![])] tiling_containers: Vec<TilingContainer>,
-  ) -> Self {
-    let split = Self::new(tiling_direction, gaps_config);
-
-    for child in tiling_containers {
-      attach_container(&child.into(), &split.clone().into(), None)
-        .unwrap();
-    }
-
-    split
-  }
-}
-
-#[bon]
 impl TilingWindow {
   #[builder]
   pub fn mock(
-    #[builder(default = 1.0)] tiling_size: f32,
     #[builder(default = String::new())] title: String,
     #[builder(default = String::new())] process_name: String,
     #[builder(default = mock_window_rect())] floating_placement: Rect,
-    #[builder(default = GapsConfig::default())] gaps_config: GapsConfig,
     #[builder(default = NativeWindow::mock())] native: NativeWindow,
   ) -> Self {
     let properties = NativeWindowProperties::mock()
@@ -205,7 +179,7 @@ impl TilingWindow {
       .frame(floating_placement.clone())
       .call();
 
-    let window = Self::new(
+    Self::new(
       None,
       native,
       properties,
@@ -213,14 +187,9 @@ impl TilingWindow {
       mock_border_delta(),
       floating_placement,
       false,
-      gaps_config,
       vec![],
       None,
-    );
-
-    window.set_tiling_size(tiling_size);
-
-    window
+    )
   }
 }
 
@@ -230,13 +199,11 @@ impl Workspace {
   pub fn mock(
     #[builder(default = "1".to_string())] name: String,
     display_name: Option<String>,
-    #[builder(default = TilingDirection::Horizontal)]
-    tiling_direction: TilingDirection,
     #[builder(default = Layout::default())] layout: Layout,
     #[builder(default = LayoutParams::default())]
     layout_params: LayoutParams,
     #[builder(default = GapsConfig::default())] gaps_config: GapsConfig,
-    #[builder(default = vec![])] tiling_containers: Vec<TilingContainer>,
+    #[builder(default = vec![])] tiling_windows: Vec<TilingWindow>,
     #[builder(default = vec![])] non_tiling_windows: Vec<NonTilingWindow>,
   ) -> Self {
     let config = WorkspaceConfig {
@@ -247,15 +214,9 @@ impl Workspace {
       layout: None,
     };
 
-    let workspace = Self::new(
-      config,
-      gaps_config,
-      tiling_direction,
-      layout,
-      layout_params,
-    );
+    let workspace = Self::new(config, gaps_config, layout, layout_params);
 
-    for child in tiling_containers {
+    for child in tiling_windows {
       attach_container(&child.into(), &workspace.clone().into(), None)
         .unwrap();
     }

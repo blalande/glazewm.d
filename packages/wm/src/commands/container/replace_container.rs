@@ -1,15 +1,13 @@
 use anyhow::{bail, Context};
 use wm_common::VecDequeExt;
 
-use super::{attach_container, detach_container, resize_tiling_container};
-use crate::{
-  models::Container,
-  traits::{CommonGetters, TilingSizeGetters},
-};
+use super::{attach_container, detach_container};
+use crate::{models::Container, traits::CommonGetters};
 
 /// Replaces a container at the specified index.
 ///
-/// The replaced container will be detached from the tree.
+/// The replaced container will be detached from the tree. The replacement
+/// takes over the focus position of the replaced container.
 pub fn replace_container(
   replacement_container: &Container,
   target_parent: &Container,
@@ -28,14 +26,9 @@ pub fn replace_container(
     .with_context(|| format!("No container at index {target_index}."))?;
 
   let focus_index = container_to_replace.focus_index();
-  let tiling_size = container_to_replace
-    .as_tiling_container()
-    .map(|c| c.tiling_size());
 
-  // TODO: This will cause issues if the detach causes a wrapping split
-  // container to flatten. Currently, that scenario shouldn't be possible.
-  // We also can't attach first before detaching, because detaching
-  // removes child based on ID and both containers might have the same ID.
+  // We can't attach first before detaching, because detaching removes
+  // child based on ID and both containers might have the same ID.
   detach_container(container_to_replace)?;
 
   attach_container(
@@ -49,15 +42,55 @@ pub fn replace_container(
     .borrow_child_focus_order_mut()
     .shift_to_index(focus_index, replacement_container.id());
 
-  // Match the tiling size of the replaced container if the replacement
-  // is also a tiling container.
-  if let Ok(tiling_size) = tiling_size {
-    if let Ok(replacement_container) =
-      replacement_container.as_tiling_container()
-    {
-      resize_tiling_container(&replacement_container, tiling_size);
-    }
+  Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::{
+    commands::container::set_focused_descendant,
+    models::{TilingWindow, Workspace},
+  };
+
+  #[test]
+  fn replaces_a_container_and_keeps_its_focus_position() {
+    let windows = (0..3)
+      .map(|_| TilingWindow::mock().call())
+      .collect::<Vec<_>>();
+    let workspace =
+      Workspace::mock().tiling_windows(windows.clone()).call();
+    let workspace_container: Container = workspace.clone().into();
+
+    set_focused_descendant(&windows[1].clone().into(), None);
+
+    let replacement = TilingWindow::mock().call();
+    replace_container(
+      &replacement.clone().into(),
+      &workspace_container,
+      1,
+    )
+    .unwrap();
+
+    assert!(windows[1].is_detached());
+    assert_eq!(replacement.index(), 1);
+    assert_eq!(replacement.focus_index(), 0);
+    assert_eq!(workspace.child_count(), 3);
   }
 
-  Ok(())
+  #[test]
+  fn replace_rejects_an_attached_replacement() {
+    let windows = (0..2)
+      .map(|_| TilingWindow::mock().call())
+      .collect::<Vec<_>>();
+    let workspace =
+      Workspace::mock().tiling_windows(windows.clone()).call();
+
+    assert!(replace_container(
+      &windows[1].clone().into(),
+      &workspace.into(),
+      0
+    )
+    .is_err());
+  }
 }

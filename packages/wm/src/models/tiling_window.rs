@@ -7,24 +7,17 @@ use std::{
 use anyhow::Context;
 use uuid::Uuid;
 use wm_common::{
-  ActiveDrag, ContainerDto, DisplayState, GapsConfig, TilingDirection,
-  WindowDto, WindowRuleConfig, WindowState,
+  ActiveDrag, ContainerDto, DisplayState, WindowDto, WindowRuleConfig,
+  WindowState,
 };
 use wm_platform::{NativeWindow, Rect, RectDelta};
 
 use crate::{
-  impl_common_getters, impl_container_debug,
-  impl_position_getters_as_resizable, impl_tiling_size_getters,
-  impl_window_getters,
+  impl_common_getters, impl_container_debug, impl_window_getters,
   models::{
-    Container, DirectionContainer, InsertionTarget,
-    NativeWindowProperties, NonTilingWindow, TilingContainer,
-    WindowContainer,
+    Container, NativeWindowProperties, NonTilingWindow, WindowContainer,
   },
-  traits::{
-    CommonGetters, PositionGetters, TilingDirectionGetters,
-    TilingSizeGetters, WindowGetters,
-  },
+  traits::{CommonGetters, PositionGetters, WindowGetters},
 };
 
 #[derive(Clone)]
@@ -35,7 +28,6 @@ struct TilingWindowInner {
   parent: Option<Container>,
   children: VecDeque<Container>,
   child_focus_order: VecDeque<Uuid>,
-  tiling_size: f32,
   native: NativeWindow,
   native_properties: NativeWindowProperties,
   state: WindowState,
@@ -45,7 +37,6 @@ struct TilingWindowInner {
   has_pending_dpi_adjustment: bool,
   floating_placement: Rect,
   has_custom_floating_placement: bool,
-  gaps_config: GapsConfig,
   done_window_rules: Vec<WindowRuleConfig>,
   active_drag: Option<ActiveDrag>,
 }
@@ -60,7 +51,6 @@ impl TilingWindow {
     border_delta: RectDelta,
     floating_placement: Rect,
     has_custom_floating_placement: bool,
-    gaps_config: GapsConfig,
     done_window_rules: Vec<WindowRuleConfig>,
     active_drag: Option<ActiveDrag>,
   ) -> Self {
@@ -69,7 +59,6 @@ impl TilingWindow {
       parent: None,
       children: VecDeque::new(),
       child_focus_order: VecDeque::new(),
-      tiling_size: 1.0,
       native,
       native_properties: properties,
       state: WindowState::Tiling,
@@ -79,7 +68,6 @@ impl TilingWindow {
       has_pending_dpi_adjustment: false,
       floating_placement,
       has_custom_floating_placement,
-      gaps_config,
       done_window_rules,
       active_drag,
     };
@@ -87,11 +75,7 @@ impl TilingWindow {
     Self(Rc::new(RefCell::new(window)))
   }
 
-  pub fn to_non_tiling(
-    &self,
-    state: WindowState,
-    insertion_target: Option<InsertionTarget>,
-  ) -> NonTilingWindow {
+  pub fn to_non_tiling(&self, state: WindowState) -> NonTilingWindow {
     NonTilingWindow::new(
       Some(self.id()),
       self.native().clone(),
@@ -99,7 +83,6 @@ impl TilingWindow {
       state,
       Some(WindowState::Tiling),
       self.border_delta(),
-      insertion_target,
       self.floating_placement(),
       self.has_custom_floating_placement(),
       self.done_window_rules(),
@@ -114,7 +97,6 @@ impl TilingWindow {
       id: self.id(),
       parent_id: self.parent().map(|parent| parent.id()),
       has_focus: self.has_focus(None),
-      tiling_size: Some(self.tiling_size()),
       width: rect.width(),
       height: rect.height(),
       x: rect.x(),
@@ -137,6 +119,44 @@ impl TilingWindow {
 
 impl_container_debug!(TilingWindow);
 impl_common_getters!(TilingWindow);
-impl_tiling_size_getters!(TilingWindow);
-impl_position_getters_as_resizable!(TilingWindow);
 impl_window_getters!(TilingWindow);
+
+impl TilingWindow {
+  /// Index of this window amongst the tiling children of its workspace.
+  ///
+  /// This is the index of the window's rect in
+  /// [`Workspace::layout_rects`]. Returns `None` if the window is
+  /// detached.
+  ///
+  /// [`Workspace::layout_rects`]: crate::models::Workspace::layout_rects
+  pub fn tiling_index(&self) -> Option<usize> {
+    self
+      .parent()?
+      .tiling_children()
+      .position(|sibling| sibling.id() == self.id())
+  }
+}
+
+impl PositionGetters for TilingWindow {
+  /// Gets the rect that the layout of the workspace assigns to the window.
+  fn to_rect(&self) -> anyhow::Result<Rect> {
+    let workspace = self
+      .workspace()
+      .context("Tiling window has no workspace.")?;
+
+    let index = self
+      .tiling_index()
+      .context("Tiling window is not attached to a workspace.")?;
+
+    // ponytail: Every window computes the rects of the whole workspace, so
+    // a redraw is O(n^2) in the number of tiling windows. This is fine for
+    // the ~20 windows of a workspace; if it shows up in a profile, cache
+    // the rects per workspace for the duration of a redraw in
+    // `pending_sync`/`platform_sync`.
+    workspace
+      .layout_rects()?
+      .into_iter()
+      .nth(index)
+      .context("Layout produced no rect for the tiling window.")
+  }
+}

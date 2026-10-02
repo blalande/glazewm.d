@@ -7,7 +7,6 @@ edition = "2021"
 path = "src/lib.rs"
 
 [dependencies]
-anyhow = { workspace = true }
 clap = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true }

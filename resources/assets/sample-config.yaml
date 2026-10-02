@@ -183,6 +183,8 @@ window_rules:
 
 binding_modes:
   # When enabled, the focused window can be resized via arrow keys or HJKL.
+  # Tiling windows can only be resized in width, which resizes the master
+  # area.
   - name: 'resize'
     keybindings:
       - commands: ['resize --width -2%']
@@ -198,27 +200,35 @@ binding_modes:
         bindings: ['escape', 'enter', 'alt+r']
 
 keybindings:
-  # Shift focus in a given direction.
-  - commands: ['focus --direction left']
-    bindings: ['alt+h', 'alt+left']
-  - commands: ['focus --direction right']
-    bindings: ['alt+l', 'alt+right']
-  - commands: ['focus --direction up']
-    bindings: ['alt+k', 'alt+up']
-  - commands: ['focus --direction down']
+  # Shift focus to the next/previous tiling window of the workspace. With
+  # `--cross-monitor`, moving past the last/first window continues on the
+  # next/previous monitor.
+  - commands: ['focus --next --cross-monitor']
     bindings: ['alt+j', 'alt+down']
+  - commands: ['focus --previous --cross-monitor']
+    bindings: ['alt+k', 'alt+up']
 
-  # Move focused window in a given direction.
-  - commands: ['move --direction left']
-    bindings: ['alt+shift+h', 'alt+shift+left']
-  - commands: ['move --direction right']
-    bindings: ['alt+shift+l', 'alt+shift+right']
-  - commands: ['move --direction up']
-    bindings: ['alt+shift+k', 'alt+shift+up']
-  - commands: ['move --direction down']
+  # Move the focused tiling window one place towards the end/start of the
+  # workspace. With `--cross-monitor`, moving past the last/first place
+  # moves the window to the next/previous monitor.
+  - commands: ['move --next --cross-monitor']
     bindings: ['alt+shift+j', 'alt+shift+down']
+  - commands: ['move --previous --cross-monitor']
+    bindings: ['alt+shift+k', 'alt+shift+up']
 
-  # Resize focused window by a percentage or pixel amount.
+  # Make the focused tiling window the master window of the workspace.
+  - commands: ['promote']
+    bindings: ['alt+shift+enter']
+
+  # Shrink/grow the master area of the `master_stack` and `dwindle`
+  # layouts.
+  - commands: ['adjust-master-ratio -0.05']
+    bindings: ['alt+h', 'alt+left']
+  - commands: ['adjust-master-ratio +0.05']
+    bindings: ['alt+l', 'alt+right']
+
+  # Resize focused window by a percentage or pixel amount. Tiling windows
+  # can only be resized in width, which resizes the master area.
   - commands: ['resize --width -2%']
     bindings: ['alt+u']
   - commands: ['resize --width +2%']
@@ -239,9 +249,8 @@ keybindings:
   - commands: ['wm-toggle-pause']
     bindings: ['alt+shift+p']
 
-  # Change tiling direction. This determines where new tiling windows will
-  # be inserted.
-  - commands: ['toggle-tiling-direction']
+  # Switch the workspace to the next layout.
+  - commands: ['cycle-layout']
     bindings: ['alt+v']
 
   # Change focus from tiling windows -> floating -> fullscreen.

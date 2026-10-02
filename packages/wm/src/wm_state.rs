@@ -29,7 +29,7 @@ use crate::{
 
 pub struct WmState {
   /// Root node of the container tree. Monitors are the children of the
-  /// root node, followed by workspaces, then split containers/windows.
+  /// root node, followed by workspaces, then windows.
   pub root_container: RootContainer,
 
   pub dispatcher: Dispatcher,
@@ -624,23 +624,6 @@ impl WmState {
     non_minimized_focus_target
       .or(descendant_focus_order.first().cloned())
       .or(Some(workspace.into()))
-  }
-
-  /// Returns all containers that contain the given point.
-  #[allow(clippy::unused_self)]
-  pub fn containers_at_point(
-    &self,
-    origin_container: &Container,
-    point: &Point,
-  ) -> Vec<Container> {
-    origin_container
-      .descendants()
-      .filter(|descendant| {
-        descendant
-          .to_rect()
-          .is_ok_and(|rect| rect.contains_point(point))
-      })
-      .collect()
   }
 
   /// Returns the monitor that contains the given point.

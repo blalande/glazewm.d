@@ -8,8 +8,7 @@ use uuid::Uuid;
 use wm_common::ContainerDto;
 
 use crate::models::{
-  Container, DirectionContainer, Monitor, TilingContainer,
-  WindowContainer, Workspace,
+  Container, Monitor, TilingWindow, WindowContainer, Workspace,
 };
 
 #[delegatable_trait]
@@ -19,11 +18,7 @@ pub trait CommonGetters {
 
   fn as_container(&self) -> Container;
 
-  fn as_tiling_container(&self) -> anyhow::Result<TilingContainer>;
-
   fn as_window_container(&self) -> anyhow::Result<WindowContainer>;
-
-  fn as_direction_container(&self) -> anyhow::Result<DirectionContainer>;
 
   fn to_dto(&self) -> anyhow::Result<ContainerDto>;
 
@@ -90,14 +85,15 @@ pub trait CommonGetters {
       .cloned()
   }
 
+  /// Direct children that are tiling windows, in layout order.
   fn tiling_children(
     &self,
-  ) -> Box<dyn Iterator<Item = TilingContainer> + '_> {
+  ) -> Box<dyn Iterator<Item = TilingWindow> + '_> {
     Box::new(
       self
         .children()
         .into_iter()
-        .filter_map(|container| container.try_into().ok()),
+        .filter_map(|container| container.as_tiling_window().cloned()),
     )
   }
 
@@ -198,22 +194,6 @@ pub trait CommonGetters {
     )
   }
 
-  fn tiling_siblings(
-    &self,
-  ) -> Box<dyn Iterator<Item = TilingContainer> + '_> {
-    Box::new(
-      self
-        .siblings()
-        .filter_map(|container| container.try_into().ok()),
-    )
-  }
-
-  fn ancestors(&self) -> Ancestors {
-    Ancestors {
-      start: self.parent(),
-    }
-  }
-
   fn self_and_ancestors(&self) -> Ancestors {
     Ancestors {
       start: Some(self.as_container()),
@@ -236,16 +216,6 @@ pub trait CommonGetters {
     self
       .self_and_ancestors()
       .find_map(|container| container.as_monitor().cloned())
-  }
-
-  /// Nearest direction container (i.e. split container or workspace) that
-  /// this container belongs to.
-  ///
-  /// Note that this might return the container itself.
-  fn direction_container(&self) -> Option<DirectionContainer> {
-    self
-      .self_and_ancestors()
-      .find_map(|container| container.try_into().ok())
   }
 
   /// Index of this container in parent's child focus order.
@@ -324,20 +294,8 @@ macro_rules! impl_common_getters {
         self.clone().into()
       }
 
-      fn as_tiling_container(&self) -> anyhow::Result<TilingContainer> {
-        TryInto::<TilingContainer>::try_into(self.as_container())
-          .map_err(anyhow::Error::msg)
-      }
-
       fn as_window_container(&self) -> anyhow::Result<WindowContainer> {
         TryInto::<WindowContainer>::try_into(self.as_container())
-          .map_err(anyhow::Error::msg)
-      }
-
-      fn as_direction_container(
-        &self,
-      ) -> anyhow::Result<DirectionContainer> {
-        TryInto::<DirectionContainer>::try_into(self.as_container())
           .map_err(anyhow::Error::msg)
       }
 

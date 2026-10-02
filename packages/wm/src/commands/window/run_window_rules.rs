@@ -28,7 +28,7 @@ pub fn run_window_rules(
     for command in &rule.commands {
       WindowManager::run_command(
         command,
-        subject_window.clone().into(),
+        &subject_window.clone().into(),
         state,
         config,
       )?;

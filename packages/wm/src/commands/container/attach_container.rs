@@ -1,14 +1,12 @@
 use anyhow::bail;
 
-use super::resize_tiling_container;
-use crate::{
-  models::Container,
-  traits::{CommonGetters, TilingSizeGetters},
-};
+use crate::{models::Container, traits::CommonGetters};
 
 /// Inserts a child container at the specified index.
 ///
-/// The inserted child will be resized to fit the available space.
+/// Appends the child if no index is given. Callers are responsible for
+/// queueing the parent workspace for redraw when attaching a tiling
+/// window, since any change to the tiling windows moves all of them.
 pub fn attach_container(
   child: &Container,
   target_parent: &Container,
@@ -36,22 +34,46 @@ pub fn attach_container(
 
   *child.borrow_parent_mut() = Some(target_parent.clone());
 
-  // Resize the child and its siblings if it is a tiling container.
-  if let Ok(child) = child.as_tiling_container() {
-    let tiling_siblings = child.tiling_siblings().collect::<Vec<_>>();
-
-    if tiling_siblings.is_empty() {
-      child.set_tiling_size(1.0);
-      return Ok(());
-    }
-
-    // Set initial tiling size to 0, and then size up the container
-    // to the target size.
-    #[allow(clippy::cast_precision_loss)]
-    let target_size = 1.0 / (tiling_siblings.len() + 1) as f32;
-    child.set_tiling_size(0.0);
-    resize_tiling_container(&child, target_size);
-  }
-
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::{
+    commands::container::detach_container,
+    models::{TilingWindow, Workspace},
+  };
+
+  #[test]
+  fn attach_clamps_the_index_and_detach_removes_the_child() {
+    let workspace = Workspace::mock().call();
+    let workspace_container: Container = workspace.clone().into();
+
+    let first = TilingWindow::mock().call();
+    let second = TilingWindow::mock().call();
+    attach_container(&first.clone().into(), &workspace_container, Some(5))
+      .unwrap();
+    attach_container(
+      &second.clone().into(),
+      &workspace_container,
+      Some(0),
+    )
+    .unwrap();
+
+    assert_eq!(second.index(), 0);
+    assert_eq!(first.index(), 1);
+    assert!(attach_container(
+      &first.clone().into(),
+      &workspace_container,
+      None
+    )
+    .is_err());
+
+    detach_container(second.clone().into()).unwrap();
+
+    assert!(second.is_detached());
+    assert_eq!(workspace.child_count(), 1);
+    assert_eq!(workspace.borrow_child_focus_order().len(), 1);
+  }
 }

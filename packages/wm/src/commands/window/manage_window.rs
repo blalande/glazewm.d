@@ -71,7 +71,8 @@ pub fn manage_window(
       window.workspace().context("No workspace.")?,
     );
 
-    // Sibling containers need to be redrawn if the window is tiling.
+    // The whole workspace needs to be redrawn if the window is tiling,
+    // since adding a tiling window moves all the others.
     state.pending_sync.queue_container_to_redraw(
       if window.state() == WindowState::Tiling {
         window.parent().context("No parent.")?
@@ -165,12 +166,11 @@ fn create_window(
     .displayed_workspace()
     .context("No nearest workspace.")?;
 
-  let gaps_config = config.value.gaps.clone();
   let window_state =
     window_state_to_create(&native_properties, &nearest_monitor, config)?;
 
   // Attach the new window as the first child of the target parent (if
-  // provided), otherwise, add as a sibling of the focused container.
+  // provided), otherwise, insert it after the focused tiling window.
   let (target_parent, target_index) = match target_parent {
     Some(parent) => (parent, 0),
     None => insertion_target(&window_state, state)?,
@@ -221,7 +221,6 @@ fn create_window(
       border_delta,
       floating_placement,
       false,
-      gaps_config,
       Vec::new(),
       None,
     )
@@ -233,7 +232,6 @@ fn create_window(
       window_state,
       None,
       border_delta,
-      None,
       floating_placement,
       !prefers_centered,
       Vec::new(),
@@ -312,11 +310,8 @@ fn window_state_to_create(
 ///
 /// Rules:
 /// - For non-tiling windows: Always append to the workspace.
-/// - For tiling windows:
-///   1. Try to insert after the focused tiling window if one exists.
-///   2. If a non-tiling window is focused, try to insert after the first
-///      tiling window found.
-///   3. If no tiling windows exist, append to the workspace.
+/// - For tiling windows: Insert after the workspace's focused tiling
+///   window, or append to the workspace if it has no tiling windows.
 ///
 /// Returns tuple of (parent container, insertion index).
 fn insertion_target(
@@ -329,27 +324,11 @@ fn insertion_target(
   let focused_workspace =
     focused_container.workspace().context("No workspace.")?;
 
-  // For tiling windows, try to find a suitable tiling window to insert
-  // next to.
-  if *window_state == WindowState::Tiling {
-    let sibling = match focused_container {
-      Container::TilingWindow(_) => Some(focused_container),
-      _ => focused_workspace
-        .descendant_focus_order()
-        .find(Container::is_tiling_window),
-    };
+  let index = if *window_state == WindowState::Tiling {
+    focused_workspace.index_after_focused_tiling_window()
+  } else {
+    focused_workspace.child_count()
+  };
 
-    if let Some(sibling) = sibling {
-      return Ok((
-        sibling.parent().context("No parent.")?,
-        sibling.index() + 1,
-      ));
-    }
-  }
-
-  // Default to appending to workspace.
-  Ok((
-    focused_workspace.clone().into(),
-    focused_workspace.child_count(),
-  ))
+  Ok((focused_workspace.into(), index))
 }

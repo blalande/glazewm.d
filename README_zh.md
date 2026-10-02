@@ -330,6 +330,7 @@ window_behavior:
 ```yaml
 binding_modes:
   # 启用时，可以通过方向键或 HJKL 调整聚焦窗口的大小。
+  # 平铺窗口只能调整宽度，这会调整主区域的大小。
   - name: "resize"
     keybindings:
       - commands: ["resize --width -2%"]
@@ -353,9 +354,13 @@ binding_modes:
 
 **问：如何创建 `<插入布局>`？**
 
-您可以通过使用 `alt+v` 更改平铺方向来创建自定义布局。这会改变下一个窗口相对于当前窗口的放置位置。如果当前窗口的方向是水平的，新窗口将放置在其右侧。如果是垂直的，将放置在其下方。这也适用于移动窗口；固定窗口的平铺方向将影响移动窗口的放置位置。
+平铺窗口由工作区的布局自动排列：`master_stack`、`columns`、`rows`、`monocle`、`grid` 或 `dwindle`。默认布局通过 `general.default_layout` 设置，也可以通过 `workspaces` 条目的 `layout` 键为每个工作区单独覆盖。
 
-社区制作的脚本如 [Dutch-Raptor/GAT-GWM](https://github.com/Dutch-Raptor/GAT-GWM) 和 [burgr033/GlazeWM-autotiling-python](https://github.com/burgr033/GlazeWM-autotiling-python) 可用于自动更改平铺方向。目前不支持自动布局的原生支持。
+可以在 GlazeWM 运行时使用 `set-layout <layout>` 或 `cycle-layout`（默认配置中为 `alt+v`）更改布局。`adjust-master-ratio`、`adjust-master-count` 和 `flip-layout` 命令用于调整布局，调整平铺窗口的宽度会改变主区域比例。
+
+平铺窗口是有序的，新窗口会插入到当前聚焦窗口之后。`focus --next` 和 `focus --previous` 在它们之间切换，`move --next` 和 `move --previous` 将聚焦窗口与相邻窗口交换，`promote` 使其成为主窗口。这些命令在工作区末端会循环，与 `--cross-monitor` 一起使用时则会继续到下一个或上一个显示器。
+
+平铺方向命令（`toggle-tiling-direction` 和 `set-tiling-direction`）以及 `tiling-direction` 查询已被移除。使用它们的快捷键需要替换，例如替换为 `cycle-layout`。
 
 **问：如何为 `<插入应用程序>` 创建规则？**
 

@@ -376,6 +376,39 @@ pub enum Ordinal {
   Previous,
 }
 
+impl Ordinal {
+  /// Gets the ordinal selected by a pair of mutually exclusive `next` and
+  /// `previous` flags.
+  #[must_use]
+  pub fn from_flags(next: bool, previous: bool) -> Option<Self> {
+    match (next, previous) {
+      (true, false) => Some(Self::Next),
+      (false, true) => Some(Self::Previous),
+      _ => None,
+    }
+  }
+
+  /// Steps from `index` in a list of `len` items, wrapping around at both
+  /// ends.
+  ///
+  /// Returns 0 for an empty list.
+  ///
+  /// Example:
+  /// ```
+  /// # use wm_common::Ordinal;
+  /// assert_eq!(Ordinal::Next.wrapping_step(2, 3), 0);
+  /// assert_eq!(Ordinal::Previous.wrapping_step(0, 3), 2);
+  /// ```
+  #[must_use]
+  pub fn wrapping_step(self, index: usize, len: usize) -> usize {
+    match self {
+      Self::Next => (index + 1).checked_rem(len).unwrap_or(0),
+      Self::Previous if index == 0 => len.saturating_sub(1),
+      Self::Previous => index - 1,
+    }
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -399,6 +432,26 @@ mod tests {
       .iter()
       .map(|&(x, y, w, h)| Rect::from_xy(x, y, w, h))
       .collect()
+  }
+
+  #[test]
+  fn ordinal_wraps_in_both_directions() {
+    assert_eq!(Ordinal::Next.wrapping_step(0, 3), 1);
+    assert_eq!(Ordinal::Next.wrapping_step(2, 3), 0);
+    assert_eq!(Ordinal::Previous.wrapping_step(2, 3), 1);
+    assert_eq!(Ordinal::Previous.wrapping_step(0, 3), 2);
+    assert_eq!(Ordinal::Next.wrapping_step(0, 1), 0);
+    assert_eq!(Ordinal::Previous.wrapping_step(0, 1), 0);
+    assert_eq!(Ordinal::Next.wrapping_step(0, 0), 0);
+    assert_eq!(Ordinal::Previous.wrapping_step(0, 0), 0);
+  }
+
+  #[test]
+  fn ordinal_from_flags() {
+    assert_eq!(Ordinal::from_flags(true, false), Some(Ordinal::Next));
+    assert_eq!(Ordinal::from_flags(false, true), Some(Ordinal::Previous));
+    assert_eq!(Ordinal::from_flags(false, false), None);
+    assert_eq!(Ordinal::from_flags(true, true), None);
   }
 
   #[test]

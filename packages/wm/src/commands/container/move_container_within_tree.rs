@@ -1,41 +1,27 @@
-use anyhow::Context;
+use anyhow::{bail, Context};
 use wm_common::{VecDequeExt, WmEvent};
 
-use super::{
-  attach_container, detach_container, flatten_child_split_containers,
-  set_focused_descendant,
+use super::{attach_container, detach_container, set_focused_descendant};
+use crate::{
+  models::{Container, TilingWindow},
+  traits::CommonGetters,
+  wm_state::WmState,
 };
-use crate::{models::Container, traits::CommonGetters, wm_state::WmState};
 
-/// Move a container to a new location in the tree. This detaches the
-/// container from its current parent and attaches it to the new parent at
-/// the specified index.
+/// Moves a container to a new parent in the tree, at the specified index.
 ///
-/// If this container is a tiling container, its siblings are resized on
-/// detach, and the container is sized to the default tiling size with its
-/// new siblings. No changes to the container's tiling size are made if
-/// its parent stays the same.
+/// Within the same parent, the container is shifted to the target index.
+/// Otherwise, it is detached from its current parent and attached to the
+/// target parent, which keeps the focus order of both subtrees consistent.
 ///
-/// This will flatten any redundant split containers after moving the
-/// container, which can cause the target parent to become detached. For
-/// example, in the layout V[1 H[2]] where container 1 is moved down, the
-/// parent gets removed resulting in V[1 2].
+/// For a tiling window, the callers are responsible for queueing both the
+/// original and the target workspace for redraw.
 pub fn move_container_within_tree(
   container_to_move: &Container,
   target_parent: &Container,
   target_index: usize,
   state: &WmState,
 ) -> anyhow::Result<()> {
-  // Create iterator of parent, grandparent, and great-grandparent.
-  let ancestors =
-    container_to_move.ancestors().take(3).collect::<Vec<_>>();
-
-  // Get lowest common ancestor (LCA) between `container_to_move` and
-  // `target_parent`. This could be the `target_parent` itself.
-  let lowest_common_ancestor =
-    lowest_common_ancestor(container_to_move, target_parent)
-      .context("No common ancestor between containers.")?;
-
   // If the container is already a child of the target parent, then shift
   // it to the target index.
   if container_to_move.parent().context("No parent.")? == *target_parent {
@@ -43,28 +29,19 @@ pub fn move_container_within_tree(
       .borrow_children_mut()
       .shift_to_index(target_index, container_to_move.clone());
 
-    if container_to_move.has_focus(None) {
-      state.emit_event(WmEvent::FocusedContainerMoved {
-        focused_container: container_to_move.to_dto()?,
-      });
-    }
+    emit_if_focused(container_to_move, state)?;
 
     return Ok(());
   }
 
-  // Handle case where target parent is the LCA. For example, when swapping
-  // sibling containers or moving a container to a direct ancestor.
-  if *target_parent == lowest_common_ancestor {
-    return move_to_lowest_common_ancestor(
-      container_to_move,
-      &lowest_common_ancestor,
-      target_index,
-      state,
-    );
-  }
+  // Get lowest common ancestor (LCA) between the original parent and
+  // `target_parent`. The original parent can never be an ancestor of the
+  // target parent (or vice versa), so the LCA is a distinct container.
+  let lowest_common_ancestor =
+    lowest_common_ancestor(container_to_move, target_parent)
+      .context("No common ancestor between containers.")?;
 
   // Get ancestor of `container_to_move` that is a direct child of the LCA.
-  // This could be the `container_to_move` itself.
   let container_to_move_ancestor = container_to_move
     .self_and_ancestors()
     .find(|ancestor| {
@@ -120,53 +97,49 @@ pub fn move_container_within_tree(
       .shift_to_index(original_focus_index, target_parent_ancestor.id());
   }
 
-  // After moving the container, flatten any redundant split containers.
-  // For example, in the layout V[1 H[2]] where container 1 is moved down
-  // to become V[H[1 2]], this will then need to be flattened to V[1 2].
-  for ancestor in ancestors.iter().rev() {
-    flatten_child_split_containers(ancestor)?;
-  }
-
-  if container_to_move.has_focus(None) {
-    state.emit_event(WmEvent::FocusedContainerMoved {
-      focused_container: container_to_move.to_dto()?,
-    });
-  }
-
-  Ok(())
+  emit_if_focused(container_to_move, state)
 }
 
-fn move_to_lowest_common_ancestor(
-  container_to_move: &Container,
-  lowest_common_ancestor: &Container,
-  target_index: usize,
+/// Swaps the positions of two tiling windows of the same workspace.
+///
+/// The callers are responsible for queueing the workspace for redraw.
+pub fn swap_tiling_windows(
+  window_a: &TilingWindow,
+  window_b: &TilingWindow,
   state: &WmState,
 ) -> anyhow::Result<()> {
-  // Keep reference to focus index of container's ancestor in LCA's child
-  // focus order.
-  let original_focus_index = container_to_move
-    .self_and_ancestors()
-    .find(|ancestor| {
-      ancestor.parent() == Some(lowest_common_ancestor.clone())
-    })
-    .map(|ancestor| ancestor.focus_index())
-    .context("Failed to get focus index of container's ancestor.")?;
+  let parent = window_a.parent().context("No parent.")?;
 
-  detach_container(container_to_move.clone())?;
+  if window_b.parent().as_ref() != Some(&parent) {
+    bail!("Cannot swap tiling windows of different workspaces.");
+  }
 
-  attach_container(
-    &container_to_move.clone(),
-    &lowest_common_ancestor.clone(),
-    Some(target_index),
-  )?;
+  {
+    let mut children = parent.borrow_children_mut();
 
-  lowest_common_ancestor
-    .borrow_child_focus_order_mut()
-    .shift_to_index(original_focus_index, container_to_move.id());
+    let index_of = |window: &TilingWindow| {
+      children.iter().position(|child| child.id() == window.id())
+    };
 
-  if container_to_move.has_focus(None) {
+    if let (Some(index_a), Some(index_b)) =
+      (index_of(window_a), index_of(window_b))
+    {
+      children.swap(index_a, index_b);
+    }
+  }
+
+  emit_if_focused(&window_a.as_container(), state)?;
+  emit_if_focused(&window_b.as_container(), state)
+}
+
+/// Emits a `FocusedContainerMoved` event if the container has focus.
+fn emit_if_focused(
+  container: &Container,
+  state: &WmState,
+) -> anyhow::Result<()> {
+  if container.has_focus(None) {
     state.emit_event(WmEvent::FocusedContainerMoved {
-      focused_container: container_to_move.to_dto()?,
+      focused_container: container.to_dto()?,
     });
   }
 
@@ -198,4 +171,133 @@ pub fn lowest_common_ancestor(
   }
 
   None
+}
+
+#[cfg(test)]
+mod tests {
+  use tokio::sync::mpsc;
+  use wm_platform::Dispatcher;
+
+  use super::*;
+  use crate::models::{Monitor, Workspace};
+
+  fn mock_state() -> WmState {
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (exit_tx, _exit_rx) = mpsc::unbounded_channel();
+
+    WmState::new(Dispatcher::mock(), event_tx, exit_tx)
+  }
+
+  fn tiling_ids(workspace: &Workspace) -> Vec<uuid::Uuid> {
+    workspace
+      .tiling_children()
+      .map(|window| window.id())
+      .collect()
+  }
+
+  #[test]
+  fn swaps_two_tiling_windows() {
+    let state = mock_state();
+    let windows = (0..3)
+      .map(|_| TilingWindow::mock().call())
+      .collect::<Vec<_>>();
+    let workspace =
+      Workspace::mock().tiling_windows(windows.clone()).call();
+    let _monitor =
+      Monitor::mock().workspaces(vec![workspace.clone()]).call();
+
+    swap_tiling_windows(&windows[0], &windows[2], &state).unwrap();
+
+    assert_eq!(
+      tiling_ids(&workspace),
+      vec![windows[2].id(), windows[1].id(), windows[0].id()]
+    );
+
+    // The focus order is unaffected by a swap.
+    assert!(windows[0].has_focus(None));
+    assert!(!windows[2].has_focus(None));
+  }
+
+  #[test]
+  fn swap_rejects_windows_of_different_workspaces() {
+    let state = mock_state();
+    let window_a = TilingWindow::mock().call();
+    let window_b = TilingWindow::mock().call();
+    let _workspace_a = Workspace::mock()
+      .tiling_windows(vec![window_a.clone()])
+      .call();
+    let _workspace_b = Workspace::mock()
+      .tiling_windows(vec![window_b.clone()])
+      .call();
+
+    assert!(swap_tiling_windows(&window_a, &window_b, &state).is_err());
+  }
+
+  #[test]
+  fn shifts_within_the_same_workspace() {
+    let state = mock_state();
+    let windows = (0..3)
+      .map(|_| TilingWindow::mock().call())
+      .collect::<Vec<_>>();
+    let workspace =
+      Workspace::mock().tiling_windows(windows.clone()).call();
+    let _monitor =
+      Monitor::mock().workspaces(vec![workspace.clone()]).call();
+
+    move_container_within_tree(
+      &windows[2].clone().into(),
+      &workspace.clone().into(),
+      0,
+      &state,
+    )
+    .unwrap();
+
+    assert_eq!(
+      tiling_ids(&workspace),
+      vec![windows[2].id(), windows[0].id(), windows[1].id()]
+    );
+  }
+
+  #[test]
+  fn moves_to_another_workspace_at_the_target_index() {
+    let state = mock_state();
+    let moved = TilingWindow::mock().call();
+    let origin =
+      Workspace::mock().tiling_windows(vec![moved.clone()]).call();
+    let others = (0..2)
+      .map(|_| TilingWindow::mock().call())
+      .collect::<Vec<_>>();
+    let target = Workspace::mock()
+      .name("2".to_string())
+      .tiling_windows(others.clone())
+      .call();
+
+    let monitor_a =
+      Monitor::mock().workspaces(vec![origin.clone()]).call();
+    let monitor_b =
+      Monitor::mock().workspaces(vec![target.clone()]).call();
+    for monitor in [monitor_a, monitor_b] {
+      crate::commands::container::attach_container(
+        &monitor.into(),
+        &state.root_container.clone().into(),
+        None,
+      )
+      .unwrap();
+    }
+
+    move_container_within_tree(
+      &moved.clone().into(),
+      &target.clone().into(),
+      1,
+      &state,
+    )
+    .unwrap();
+
+    assert!(!origin.has_children());
+    assert_eq!(
+      tiling_ids(&target),
+      vec![others[0].id(), moved.id(), others[1].id()]
+    );
+    assert_eq!(moved.workspace(), Some(target));
+  }
 }

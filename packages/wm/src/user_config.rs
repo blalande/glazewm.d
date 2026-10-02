@@ -378,3 +378,21 @@ impl UserConfig {
     })
   }
 }
+
+#[cfg(test)]
+impl UserConfig {
+  /// Creates a `UserConfig` from the sample config for use in tests.
+  ///
+  /// Does not touch the file system.
+  pub fn mock() -> Self {
+    let value: ParsedConfig = serde_yaml::from_str(SAMPLE_CONFIG)
+      .expect("The sample config should be valid.");
+
+    Self {
+      path: PathBuf::new(),
+      window_rules_by_event: Self::window_rules_by_event(&value),
+      value,
+      value_str: SAMPLE_CONFIG.to_string(),
+    }
+  }
+}

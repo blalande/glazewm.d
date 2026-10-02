@@ -7,17 +7,15 @@ use std::{
 use anyhow::Context;
 use uuid::Uuid;
 use wm_common::{
-  ActiveDrag, ContainerDto, DisplayState, GapsConfig, WindowDto,
-  WindowRuleConfig, WindowState,
+  ActiveDrag, ContainerDto, DisplayState, WindowDto, WindowRuleConfig,
+  WindowState,
 };
 use wm_platform::{NativeWindow, Rect, RectDelta};
 
 use crate::{
   impl_common_getters, impl_container_debug, impl_window_getters,
   models::{
-    Container, DirectionContainer, InsertionTarget,
-    NativeWindowProperties, TilingContainer, TilingWindow,
-    WindowContainer,
+    Container, NativeWindowProperties, TilingWindow, WindowContainer,
   },
   traits::{CommonGetters, PositionGetters, WindowGetters},
 };
@@ -34,7 +32,6 @@ struct NonTilingWindowInner {
   native_properties: NativeWindowProperties,
   state: WindowState,
   prev_state: Option<WindowState>,
-  insertion_target: Option<InsertionTarget>,
   display_state: DisplayState,
   border_delta: RectDelta,
   has_pending_dpi_adjustment: bool,
@@ -53,7 +50,6 @@ impl NonTilingWindow {
     state: WindowState,
     prev_state: Option<WindowState>,
     border_delta: RectDelta,
-    insertion_target: Option<InsertionTarget>,
     floating_placement: Rect,
     has_custom_floating_placement: bool,
     done_window_rules: Vec<WindowRuleConfig>,
@@ -68,7 +64,6 @@ impl NonTilingWindow {
       native_properties: properties,
       state,
       prev_state,
-      insertion_target,
       display_state: DisplayState::Shown,
       border_delta,
       has_pending_dpi_adjustment: false,
@@ -81,18 +76,7 @@ impl NonTilingWindow {
     Self(Rc::new(RefCell::new(window)))
   }
 
-  pub fn insertion_target(&self) -> Option<InsertionTarget> {
-    self.0.borrow().insertion_target.clone()
-  }
-
-  pub fn set_insertion_target(
-    &self,
-    insertion_target: Option<InsertionTarget>,
-  ) {
-    self.0.borrow_mut().insertion_target = insertion_target;
-  }
-
-  pub fn to_tiling(&self, gaps_config: GapsConfig) -> TilingWindow {
+  pub fn to_tiling(&self) -> TilingWindow {
     let prev_state = if self.active_drag().is_some() {
       self.prev_state()
     } else {
@@ -107,7 +91,6 @@ impl NonTilingWindow {
       self.border_delta(),
       self.floating_placement(),
       self.has_custom_floating_placement(),
-      gaps_config,
       self.done_window_rules(),
       self.active_drag(),
     )
@@ -120,7 +103,6 @@ impl NonTilingWindow {
       id: self.id(),
       parent_id: self.parent().map(|parent| parent.id()),
       has_focus: self.has_focus(None),
-      tiling_size: None,
       width: rect.width(),
       height: rect.height(),
       x: rect.x(),

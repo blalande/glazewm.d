@@ -1,12 +1,12 @@
 use std::{iter, path::PathBuf};
 
-use clap::{error::KindFormatter, Args, Parser, ValueEnum};
+use clap::{error::KindFormatter, ArgGroup, Args, Parser, ValueEnum};
 use serde::{Deserialize, Deserializer, Serialize};
 use tracing::Level;
 use uuid::Uuid;
 use wm_platform::{Delta, Direction, LengthValue, OpacityValue};
 
-use crate::{Layout, TilingDirection};
+use crate::{Layout, Ordinal};
 
 const VERSION: &str = env!("VERSION_NUMBER");
 
@@ -120,8 +120,6 @@ pub enum QueryCommand {
   /// Outputs the focused container (either a window or an empty
   /// workspace).
   Focused,
-  /// Outputs the tiling direction of the focused container.
-  TilingDirection,
   /// Outputs the layout and layout params of the focused workspace.
   Layout,
   /// Outputs all monitors.
@@ -146,7 +144,6 @@ pub enum SubscribableEvent {
   MonitorAdded,
   MonitorUpdated,
   MonitorRemoved,
-  TilingDirectionChanged,
   UserConfigChanged,
   WindowManaged,
   WindowUnmanaged,
@@ -233,11 +230,6 @@ pub enum InvokeCommand {
   },
   ToggleMinimized,
   ToggleTiling,
-  ToggleTilingDirection,
-  SetTilingDirection {
-    #[clap(required = true)]
-    tiling_direction: TilingDirection,
-  },
   /// Sets the layout of the focused workspace.
   SetLayout {
     #[clap(required = true)]
@@ -257,6 +249,9 @@ pub enum InvokeCommand {
   },
   /// Mirrors the layout of the focused workspace.
   FlipLayout,
+  /// Swaps the focused tiling window with the first window of its
+  /// workspace. Swaps with the second window if it is already first.
+  Promote,
   WmCycleFocus {
     #[clap(long, default_value_t = false)]
     omit_floating: bool,
@@ -328,81 +323,115 @@ pub struct InvokeAdjustBordersCommand {
 }
 
 #[derive(Args, Clone, Debug, PartialEq, Serialize)]
-#[group(required = true, multiple = false)]
+#[group(skip)]
+#[command(group(ArgGroup::new("target").required(true).multiple(false)))]
 #[allow(clippy::struct_excessive_bools)]
 pub struct InvokeFocusCommand {
-  #[clap(long)]
+  /// Direction to focus. Floating windows focus the next floating
+  /// window; tiling windows focus the monitor in that direction (use
+  /// `--next` and `--previous` to move within a workspace).
+  #[clap(long, group = "target")]
   pub direction: Option<Direction>,
 
-  #[clap(long)]
+  /// Focus the next tiling window of the workspace, wrapping at the end.
+  #[clap(long, groups = ["target", "ordinal"])]
+  pub next: bool,
+
+  /// Focus the previous tiling window of the workspace, wrapping at the
+  /// start.
+  #[clap(long, groups = ["target", "ordinal"])]
+  pub previous: bool,
+
+  /// With `--next` or `--previous`, continue onto the next or previous
+  /// monitor instead of wrapping within the workspace.
+  #[clap(long, requires = "ordinal")]
+  pub cross_monitor: bool,
+
+  #[clap(long, group = "target")]
   pub container_id: Option<Uuid>,
 
-  #[clap(long)]
+  #[clap(long, group = "target")]
   pub workspace_in_direction: Option<Direction>,
 
-  #[clap(long)]
+  #[clap(long, group = "target")]
   pub workspace: Option<String>,
 
-  #[clap(long)]
+  #[clap(long, group = "target")]
   pub monitor: Option<usize>,
 
-  #[clap(long)]
+  #[clap(long, group = "target")]
   pub next_active_workspace: bool,
 
-  #[clap(long)]
+  #[clap(long, group = "target")]
   pub prev_active_workspace: bool,
 
-  #[clap(long)]
+  #[clap(long, group = "target")]
   pub next_workspace: bool,
 
-  #[clap(long)]
+  #[clap(long, group = "target")]
   pub prev_workspace: bool,
 
-  #[clap(long)]
+  #[clap(long, group = "target")]
   pub next_active_workspace_on_monitor: bool,
 
-  #[clap(long)]
+  #[clap(long, group = "target")]
   pub prev_active_workspace_on_monitor: bool,
 
-  #[clap(long)]
+  #[clap(long, group = "target")]
   pub recent_workspace: bool,
 }
 
 #[derive(Args, Clone, Debug, PartialEq, Serialize)]
-#[group(required = true, multiple = false)]
+#[group(skip)]
+#[command(group(ArgGroup::new("target").required(true).multiple(false)))]
 #[allow(clippy::struct_excessive_bools)]
 pub struct InvokeMoveCommand {
-  /// Direction to move the window.
-  #[clap(long)]
+  /// Direction to move the window. Floating windows move in that
+  /// direction; tiling windows move to the monitor in that direction (use
+  /// `--next` and `--previous` to reorder within a workspace).
+  #[clap(long, group = "target")]
   pub direction: Option<Direction>,
 
+  /// Swap the tiling window with the next one, wrapping at the end.
+  #[clap(long, groups = ["target", "ordinal"])]
+  pub next: bool,
+
+  /// Swap the tiling window with the previous one, wrapping at the start.
+  #[clap(long, groups = ["target", "ordinal"])]
+  pub previous: bool,
+
+  /// With `--next` or `--previous`, move onto the next or previous
+  /// monitor instead of wrapping within the workspace.
+  #[clap(long, requires = "ordinal")]
+  pub cross_monitor: bool,
+
   /// Move window to workspace in specified direction.
-  #[clap(long)]
+  #[clap(long, group = "target")]
   pub workspace_in_direction: Option<Direction>,
 
   /// Name of workspace to move the window.
-  #[clap(long)]
+  #[clap(long, group = "target")]
   pub workspace: Option<String>,
 
-  #[clap(long)]
+  #[clap(long, group = "target")]
   pub next_active_workspace: bool,
 
-  #[clap(long)]
+  #[clap(long, group = "target")]
   pub prev_active_workspace: bool,
 
-  #[clap(long)]
+  #[clap(long, group = "target")]
   pub next_workspace: bool,
 
-  #[clap(long)]
+  #[clap(long, group = "target")]
   pub prev_workspace: bool,
 
-  #[clap(long)]
+  #[clap(long, group = "target")]
   pub next_active_workspace_on_monitor: bool,
 
-  #[clap(long)]
+  #[clap(long, group = "target")]
   pub prev_active_workspace_on_monitor: bool,
 
-  #[clap(long)]
+  #[clap(long, group = "target")]
   pub recent_workspace: bool,
 }
 
@@ -453,4 +482,73 @@ pub struct InvokeUpdateWorkspaceConfig {
 
   #[clap(long)]
   pub keep_alive: Option<bool>,
+}
+
+impl InvokeFocusCommand {
+  /// Ordinal step requested via `--next` or `--previous`.
+  #[must_use]
+  pub fn ordinal(&self) -> Option<Ordinal> {
+    Ordinal::from_flags(self.next, self.previous)
+  }
+}
+
+impl InvokeMoveCommand {
+  /// Ordinal step requested via `--next` or `--previous`.
+  #[must_use]
+  pub fn ordinal(&self) -> Option<Ordinal> {
+    Ordinal::from_flags(self.next, self.previous)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn parse(args: &str) -> Result<InvokeCommand, clap::Error> {
+    InvokeCommand::try_parse_from(
+      std::iter::once("").chain(args.split_whitespace()),
+    )
+  }
+
+  #[test]
+  fn parses_ordinal_focus_and_move() {
+    let Ok(InvokeCommand::Focus(focus)) =
+      parse("focus --next --cross-monitor")
+    else {
+      panic!("Expected a focus command.");
+    };
+    assert_eq!(focus.ordinal(), Some(Ordinal::Next));
+    assert!(focus.cross_monitor);
+
+    let Ok(InvokeCommand::Move(args)) = parse("move --previous") else {
+      panic!("Expected a move command.");
+    };
+    assert_eq!(args.ordinal(), Some(Ordinal::Previous));
+    assert!(!args.cross_monitor);
+  }
+
+  #[test]
+  fn rejects_invalid_ordinal_combinations() {
+    assert!(parse("focus --next --previous").is_err());
+    assert!(parse("focus --next --workspace 1").is_err());
+    assert!(parse("move --cross-monitor").is_err());
+    assert!(parse("move --direction left --cross-monitor").is_err());
+    assert!(parse("focus").is_err());
+  }
+
+  #[test]
+  fn keeps_existing_targets_parsable() {
+    assert!(parse("focus --direction left").is_ok());
+    assert!(parse("focus --workspace 1").is_ok());
+    assert!(parse("move --direction left").is_ok());
+    assert!(parse("move --workspace 2").is_ok());
+    assert!(parse("move --next-workspace").is_ok());
+    assert!(parse("promote").is_ok());
+  }
+
+  #[test]
+  fn removed_tiling_direction_commands_are_rejected() {
+    assert!(parse("toggle-tiling-direction").is_err());
+    assert!(parse("set-tiling-direction horizontal").is_err());
+  }
 }
