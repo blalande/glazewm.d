@@ -123,7 +123,20 @@ fn update_workspace_configs(
         );
       }
       Some(workspace_config) => {
-        if *workspace_config != workspace.config() {
+        let current_config = workspace.config();
+
+        if *workspace_config != current_config {
+          // Re-apply the layout override only when it changed in the
+          // config, so that layouts set at runtime survive unrelated
+          // config edits.
+          if workspace_config.layout != current_config.layout {
+            workspace.set_layout(
+              workspace_config
+                .layout
+                .unwrap_or(config.value.general.default_layout),
+            );
+          }
+
           workspace.set_config(workspace_config.clone());
 
           sort_workspaces(&monitor, config)?;

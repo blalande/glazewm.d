@@ -6,7 +6,7 @@ use tracing::Level;
 use uuid::Uuid;
 use wm_platform::{Delta, Direction, LengthValue, OpacityValue};
 
-use crate::TilingDirection;
+use crate::{Layout, TilingDirection};
 
 const VERSION: &str = env!("VERSION_NUMBER");
 
@@ -122,6 +122,8 @@ pub enum QueryCommand {
   Focused,
   /// Outputs the tiling direction of the focused container.
   TilingDirection,
+  /// Outputs the layout and layout params of the focused workspace.
+  Layout,
   /// Outputs all monitors.
   Monitors,
   /// Outputs all windows.
@@ -140,6 +142,7 @@ pub enum SubscribableEvent {
   BindingModesChanged,
   FocusChanged,
   FocusedContainerMoved,
+  LayoutChanged,
   MonitorAdded,
   MonitorUpdated,
   MonitorRemoved,
@@ -235,6 +238,25 @@ pub enum InvokeCommand {
     #[clap(required = true)]
     tiling_direction: TilingDirection,
   },
+  /// Sets the layout of the focused workspace.
+  SetLayout {
+    #[clap(required = true)]
+    layout: Layout,
+  },
+  /// Switches the focused workspace to the next layout.
+  CycleLayout,
+  /// Adjusts the master ratio of the focused workspace (e.g. `0.05`).
+  AdjustMasterRatio {
+    #[clap(required = true, allow_hyphen_values = true)]
+    delta: f32,
+  },
+  /// Adjusts the master count of the focused workspace (e.g. `1`).
+  AdjustMasterCount {
+    #[clap(required = true, allow_hyphen_values = true)]
+    delta: i32,
+  },
+  /// Mirrors the layout of the focused workspace.
+  FlipLayout,
   WmCycleFocus {
     #[clap(long, default_value_t = false)]
     omit_floating: bool,

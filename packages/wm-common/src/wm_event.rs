@@ -4,7 +4,7 @@ use uuid::Uuid;
 use crate::{
   dtos::ContainerDto,
   parsed_config::{BindingModeConfig, ParsedConfig},
-  TilingDirection,
+  Layout, LayoutParams, TilingDirection,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -23,6 +23,11 @@ pub enum WmEvent {
   },
   FocusedContainerMoved {
     focused_container: ContainerDto,
+  },
+  LayoutChanged {
+    workspace: ContainerDto,
+    new_layout: Layout,
+    new_layout_params: LayoutParams,
   },
   MonitorAdded {
     added_monitor: ContainerDto,

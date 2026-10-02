@@ -27,6 +27,15 @@ general:
     # - 'window_focus': Jump when focus changes between windows.
     trigger: 'monitor_focus'
 
+  # Layout used by workspaces that do not set their own `layout`.
+  # - 'master_stack': One master area next to a stack of the other windows.
+  # - 'columns': Equal-width columns.
+  # - 'rows': Equal-height rows.
+  # - 'monocle': Every window fills the workspace.
+  # - 'grid': Windows on a roughly square grid.
+  # - 'dwindle': Each window takes half of the remaining space.
+  default_layout: 'master_stack'
+
   # How windows should be hidden when switching workspaces.
   # - 'cloak': (Windows-only) Recommended option for Windows.
   # - 'hide': (Windows-only) Legacy option for Windows. Has stability issues with some apps.
@@ -120,7 +129,21 @@ window_behavior:
       # Whether to show fullscreen windows as always on top.
       shown_on_top: false
 
+# Default parameters for the layouts. All keys are optional.
+layouts:
+  # Fraction of the workspace taken by the master area (0.1 to 0.9).
+  master_ratio: 0.55
+
+  # Number of windows in the master area (minimum 1).
+  master_count: 1
+
+  # Whether to mirror the layout (e.g. master on the right).
+  flip: false
+
 workspaces:
+  # Each workspace can override the default layout, e.g.:
+  # - name: '2'
+  #   layout: 'columns'
   - name: '1'
   - name: '2'
   - name: '3'

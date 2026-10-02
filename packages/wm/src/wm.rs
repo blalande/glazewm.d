@@ -31,7 +31,8 @@ use crate::{
       update_window_state, WindowPositionTarget,
     },
     workspace::{
-      focus_workspace, move_workspace_in_direction,
+      adjust_master_count, adjust_master_ratio, cycle_layout, flip_layout,
+      focus_workspace, move_workspace_in_direction, set_layout,
       update_workspace_config,
     },
   },
@@ -743,6 +744,19 @@ impl WindowManager {
           tiling_direction,
         )
       }
+      InvokeCommand::SetLayout { layout } => {
+        set_layout(&subject_container, *layout, state)
+      }
+      InvokeCommand::CycleLayout => {
+        cycle_layout(&subject_container, state)
+      }
+      InvokeCommand::AdjustMasterRatio { delta } => {
+        adjust_master_ratio(&subject_container, *delta, state)
+      }
+      InvokeCommand::AdjustMasterCount { delta } => {
+        adjust_master_count(&subject_container, *delta, state)
+      }
+      InvokeCommand::FlipLayout => flip_layout(&subject_container, state),
       InvokeCommand::WmCycleFocus {
         omit_floating,
         omit_fullscreen,

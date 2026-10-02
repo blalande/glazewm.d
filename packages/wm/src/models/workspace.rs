@@ -7,7 +7,8 @@ use std::{
 use anyhow::Context;
 use uuid::Uuid;
 use wm_common::{
-  ContainerDto, GapsConfig, TilingDirection, WorkspaceConfig, WorkspaceDto,
+  ContainerDto, GapsConfig, Layout, LayoutParams, TilingDirection,
+  WorkspaceConfig, WorkspaceDto,
 };
 use wm_platform::{Rect, RectDelta};
 
@@ -32,6 +33,8 @@ struct WorkspaceInner {
   config: WorkspaceConfig,
   gaps_config: GapsConfig,
   tiling_direction: TilingDirection,
+  layout: Layout,
+  layout_params: LayoutParams,
 }
 
 impl Workspace {
@@ -39,6 +42,8 @@ impl Workspace {
     config: WorkspaceConfig,
     gaps_config: GapsConfig,
     tiling_direction: TilingDirection,
+    layout: Layout,
+    layout_params: LayoutParams,
   ) -> Self {
     let workspace = WorkspaceInner {
       id: Uuid::new_v4(),
@@ -48,6 +53,8 @@ impl Workspace {
       config,
       gaps_config,
       tiling_direction,
+      layout,
+      layout_params: layout_params.sanitized(),
     };
 
     Self(Rc::new(RefCell::new(workspace)))
@@ -61,6 +68,28 @@ impl Workspace {
   /// Update the underlying config for the workspace.
   pub fn set_config(&self, config: WorkspaceConfig) {
     self.0.borrow_mut().config = config;
+  }
+
+  /// Layout used to arrange the tiling windows of the workspace.
+  pub fn layout(&self) -> Layout {
+    self.0.borrow().layout
+  }
+
+  /// Sets the layout used to arrange the tiling windows of the workspace.
+  pub fn set_layout(&self, layout: Layout) {
+    self.0.borrow_mut().layout = layout;
+  }
+
+  /// Tunable parameters of the workspace's layout.
+  pub fn layout_params(&self) -> LayoutParams {
+    self.0.borrow().layout_params.clone()
+  }
+
+  /// Sets the layout parameters of the workspace.
+  ///
+  /// Values are clamped to their valid ranges.
+  pub fn set_layout_params(&self, layout_params: LayoutParams) {
+    self.0.borrow_mut().layout_params = layout_params.sanitized();
   }
 
   /// Whether the workspace is currently displayed by the parent monitor.
@@ -173,6 +202,8 @@ impl Workspace {
       x: rect.x(),
       y: rect.y(),
       tiling_direction: self.tiling_direction(),
+      layout: self.layout(),
+      layout_params: self.layout_params(),
     }))
   }
 }
@@ -191,9 +222,10 @@ impl std::fmt::Display for Workspace {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     write!(
       f,
-      "Workspace(name={}, tiling_direction={:?})",
+      "Workspace(name={}, tiling_direction={:?}, layout={:?})",
       self.config().name,
       self.tiling_direction(),
+      self.layout(),
     )
   }
 }

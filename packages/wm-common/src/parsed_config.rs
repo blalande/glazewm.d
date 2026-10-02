@@ -4,7 +4,7 @@ use wm_platform::{
   RectDelta,
 };
 
-use crate::app_command::InvokeCommand;
+use crate::{app_command::InvokeCommand, Layout, LayoutParams};
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
@@ -13,6 +13,7 @@ pub struct ParsedConfig {
   pub gaps: GapsConfig,
   pub general: GeneralConfig,
   pub keybindings: Vec<KeybindingConfig>,
+  pub layouts: LayoutParams,
   pub window_behavior: WindowBehaviorConfig,
   pub window_effects: WindowEffectsConfig,
   pub window_rules: Vec<WindowRuleConfig>,
@@ -96,6 +97,9 @@ pub struct GeneralConfig {
 
   /// Affects which windows get shown in the native Windows taskbar.
   pub show_all_in_taskbar: bool,
+
+  /// Layout used by workspaces without a `layout` override.
+  pub default_layout: Layout,
 }
 
 impl Default for GeneralConfig {
@@ -118,6 +122,7 @@ impl Default for GeneralConfig {
         }
       },
       show_all_in_taskbar: false,
+      default_layout: Layout::default(),
     }
   }
 }
@@ -385,6 +390,10 @@ pub struct WorkspaceConfig {
 
   #[serde(default = "default_bool::<false>")]
   pub keep_alive: bool,
+
+  /// Layout override for this workspace.
+  #[serde(default)]
+  pub layout: Option<Layout>,
 }
 
 /// Helper function for setting a default value for a boolean field.
@@ -470,5 +479,53 @@ where
   #[cfg(not(target_os = "macos"))]
   {
     Ok(method)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn layout_fields_default_when_absent() {
+    let config: ParsedConfig =
+      serde_yaml::from_str("workspaces:\n  - name: '1'\n").unwrap();
+
+    assert_eq!(config.general.default_layout, Layout::MasterStack);
+    assert_eq!(config.layouts, LayoutParams::default());
+    assert_eq!(config.workspaces[0].layout, None);
+  }
+
+  #[test]
+  fn layout_fields_parse_when_present() {
+    let yaml = "
+general:
+  default_layout: columns
+layouts:
+  master_ratio: 0.6
+  master_count: 2
+  flip: true
+workspaces:
+  - name: '1'
+    layout: monocle
+  - name: '2'
+";
+    let config: ParsedConfig = serde_yaml::from_str(yaml).unwrap();
+
+    assert_eq!(config.general.default_layout, Layout::Columns);
+    assert!((config.layouts.master_ratio - 0.6).abs() < f32::EPSILON);
+    assert_eq!(config.layouts.master_count, 2);
+    assert!(config.layouts.flip);
+    assert_eq!(config.workspaces[0].layout, Some(Layout::Monocle));
+    assert_eq!(config.workspaces[1].layout, None);
+  }
+
+  #[test]
+  fn sample_config_parses() {
+    let sample =
+      include_str!("../../../resources/assets/sample-config.yaml");
+    let config: ParsedConfig = serde_yaml::from_str(sample).unwrap();
+
+    assert_eq!(config.general.default_layout, Layout::MasterStack);
   }
 }

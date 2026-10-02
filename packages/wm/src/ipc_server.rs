@@ -14,9 +14,9 @@ use uuid::Uuid;
 use wm_common::{
   AppCommand, AppMetadataData, BindingModesData, ClientResponseData,
   ClientResponseMessage, CommandData, EventSubscribeData,
-  EventSubscriptionMessage, FocusedData, MonitorsData, QueryCommand,
-  ServerMessage, SubscribableEvent, TilingDirectionData, WindowsData,
-  WmEvent, WorkspacesData, DEFAULT_IPC_PORT,
+  EventSubscriptionMessage, FocusedData, LayoutData, MonitorsData,
+  QueryCommand, ServerMessage, SubscribableEvent, TilingDirectionData,
+  WindowsData, WmEvent, WorkspacesData, DEFAULT_IPC_PORT,
 };
 
 use crate::{
@@ -239,6 +239,19 @@ impl IpcServer {
             tiling_direction: direction_container.tiling_direction(),
           })
         }
+        QueryCommand::Layout => {
+          let workspace = wm
+            .state
+            .focused_container()
+            .and_then(|focused| focused.workspace())
+            .context("No focused workspace.")?;
+
+          ClientResponseData::Layout(LayoutData {
+            layout: workspace.layout(),
+            layout_params: workspace.layout_params(),
+            workspace: workspace.to_dto()?,
+          })
+        }
         QueryCommand::Paused => {
           ClientResponseData::Paused(wm.state.is_paused)
         }
@@ -364,6 +377,7 @@ impl IpcServer {
       WmEvent::FocusedContainerMoved { .. } => {
         SubscribableEvent::FocusedContainerMoved
       }
+      WmEvent::LayoutChanged { .. } => SubscribableEvent::LayoutChanged,
       WmEvent::MonitorAdded { .. } => SubscribableEvent::MonitorAdded,
       WmEvent::MonitorUpdated { .. } => SubscribableEvent::MonitorUpdated,
       WmEvent::MonitorRemoved { .. } => SubscribableEvent::MonitorRemoved,
