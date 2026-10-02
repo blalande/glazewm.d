@@ -191,14 +191,21 @@ fn redraw_containers(
       .descendant_focus_order()
       .collect::<Vec<_>>();
 
-    // Sort the windows to update by their focus order. The most recently
-    // focused window will be updated first.
-    // TODO: To reduce flicker, redraw windows that will be shown first,
-    // then redraw the ones to be hidden last.
+    // Sort the windows to update by visibility, then by focus order. As
+    // the windows are updated in reverse, the ones to be shown are
+    // redrawn before the ones to be hidden. This reduces flicker, since
+    // the desktop doesn't briefly show through (e.g. when cycling focus
+    // in the `Monocle` layout).
     windows.sort_by_key(|window| {
-      descendant_focus_order
+      let is_shown = window
+        .workspace()
+        .is_some_and(|workspace| should_show(window, &workspace));
+
+      let focus_index = descendant_focus_order
         .iter()
-        .position(|order| order.id() == window.id())
+        .position(|order| order.id() == window.id());
+
+      (is_shown, focus_index)
     });
 
     windows

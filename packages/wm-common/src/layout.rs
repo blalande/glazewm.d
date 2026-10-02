@@ -64,14 +64,20 @@ impl Layout {
 }
 
 impl Layout {
-  /// Computes the rects of `count` tiling windows within `area`.
+  /// Computes the rects of the tiling windows within `area`, given one
+  /// `SizeWeight` per window.
   ///
   /// `inner_gap` is `(horizontal, vertical)`: the gap in pixels between
   /// side-by-side and stacked windows respectively. Outer gaps are the
   /// caller's concern (`area` must already be inset).
   ///
-  /// Returns exactly `count` rects in child order (index 0 is the first
-  /// window, i.e. the master). Rects in a row or column tile `area`
+  /// The weights size the columns of `Columns`, the rows of `Rows`, and
+  /// both the columns and the rows within a column of `Grid` (a column is
+  /// as wide as the mean width weight of its windows). Other layouts
+  /// ignore them.
+  ///
+  /// Returns exactly one rect per weight, in child order (index 0 is the
+  /// first window, i.e. the master). Rects in a row or column tile `area`
   /// exactly, with the last one absorbing the rounding remainder. Widths
   /// and heights are clamped to at least 1 px, so rects can overflow
   /// `area` when the gaps exceed it.
@@ -80,15 +86,19 @@ impl Layout {
     &self,
     params: &LayoutParams,
     area: &Rect,
-    count: usize,
+    weights: &[SizeWeight],
     inner_gap: (i32, i32),
   ) -> Vec<Rect> {
+    let count = weights.len();
+
     if count == 0 {
       return Vec::new();
     }
 
     let (gap_x, gap_y) = inner_gap;
     let ratio = params.master_ratio;
+    let widths = weights.iter().map(|w| w.width).collect::<Vec<_>>();
+    let heights = weights.iter().map(|w| w.height).collect::<Vec<_>>();
 
     let mut rects = match self {
       Self::MasterStack => {
@@ -111,13 +121,13 @@ impl Layout {
           rects
         }
       }
-      Self::Columns => split_span(area.width(), gap_x, &equal(count))
+      Self::Columns => split_span(area.width(), gap_x, &widths)
         .into_iter()
         .map(|(x, w)| {
           Rect::from_xy(area.x() + x, area.y(), w, area.height())
         })
         .collect(),
-      Self::Rows => split_span(area.height(), gap_y, &equal(count))
+      Self::Rows => split_span(area.height(), gap_y, &heights)
         .into_iter()
         .map(|(y, h)| {
           Rect::from_xy(area.x(), area.y() + y, area.width(), h)
@@ -125,19 +135,15 @@ impl Layout {
         .collect(),
       Self::Monocle => return vec![area.clone(); count],
       Self::Grid => {
-        let mut cols = 1;
-        while cols * cols < count {
-          cols += 1;
-        }
-
-        let (base, extra) = (count / cols, count % cols);
-
-        split_span(area.width(), gap_x, &equal(cols))
+        split_span(area.width(), gap_x, &grid_column_widths(weights))
           .into_iter()
-          .enumerate()
-          .flat_map(|(i, (x, w))| {
-            let rows = base + usize::from(i < extra);
-            column(area, area.x() + x, w, rows, gap_y)
+          .zip(grid_columns(count))
+          .flat_map(|((x, w), range)| {
+            split_span(area.height(), gap_y, &heights[range])
+              .into_iter()
+              .map(move |(y, h)| {
+                Rect::from_xy(area.x() + x, area.y() + y, w, h)
+              })
           })
           .collect()
       }
@@ -228,6 +234,46 @@ fn dwindle(
 /// Equal weights for `count` parts.
 fn equal(count: usize) -> Vec<f32> {
   vec![1.; count]
+}
+
+/// Gets the width weight of each column of the `Grid` layout (see
+/// `grid_columns`): the mean width weight of the column's windows.
+#[must_use]
+pub fn grid_column_widths(weights: &[SizeWeight]) -> Vec<f32> {
+  grid_columns(weights.len())
+    .into_iter()
+    .map(|range| {
+      #[allow(clippy::cast_precision_loss)]
+      let len = range.len() as f32;
+      weights[range].iter().map(|w| w.width).sum::<f32>() / len
+    })
+    .collect()
+}
+
+/// Splits `count` windows into the columns of the `Grid` layout.
+///
+/// Returns the range of window indices in each column, from left to
+/// right. The grid has `ceil(sqrt(count))` columns, and the leftmost
+/// columns get one extra window when `count` doesn't divide evenly.
+#[must_use]
+pub fn grid_columns(count: usize) -> Vec<std::ops::Range<usize>> {
+  let mut cols = 1;
+  while cols * cols < count {
+    cols += 1;
+  }
+
+  let (base, extra) = (count / cols, count % cols);
+  let mut start = 0;
+
+  (0..cols)
+    .map(|i| {
+      let end = start + base + usize::from(i < extra);
+      let range = start..end;
+      start = end;
+      range
+    })
+    .filter(|range| !range.is_empty())
+    .collect()
 }
 
 /// Stacks `rows` equal-height rects vertically in the column at `x` with
@@ -365,6 +411,70 @@ impl Default for LayoutParams {
   }
 }
 
+/// Relative size of a tiling window, used by the layouts that share space
+/// between windows (see `Layout::arrange`).
+///
+/// A window with twice the weight of its neighbours gets twice their
+/// width (or height).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SizeWeight {
+  pub width: f32,
+  pub height: f32,
+}
+
+impl SizeWeight {
+  /// Smallest allowed weight.
+  pub const MIN: f32 = 0.1;
+
+  /// Largest allowed weight.
+  pub const MAX: f32 = 10.;
+
+  /// Clamps a weight to the valid range.
+  ///
+  /// Non-finite values fall back to the default weight of 1.
+  #[must_use]
+  pub fn clamp(weight: f32) -> f32 {
+    if weight.is_finite() {
+      weight.clamp(Self::MIN, Self::MAX)
+    } else {
+      1.
+    }
+  }
+
+  /// Computes the weight that sizes a part to `target` pixels, out of
+  /// `available` pixels (gaps excluded) shared with other parts whose
+  /// weights sum to `others`.
+  ///
+  /// The target is kept within the span, and the result is clamped to the
+  /// valid range. Returns `None` if the part has no other part to share
+  /// the span with, or if the span is too small to resize.
+  #[must_use]
+  pub fn for_length(
+    target: i32,
+    available: i32,
+    others: f32,
+  ) -> Option<f32> {
+    if others <= 0. || available <= 1 {
+      return None;
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    let (target, available) =
+      (target.clamp(1, available - 1) as f32, available as f32);
+
+    Some(Self::clamp(target * others / (available - target)))
+  }
+}
+
+impl Default for SizeWeight {
+  fn default() -> Self {
+    Self {
+      width: 1.,
+      height: 1.,
+    }
+  }
+}
+
 /// Relative position in an ordered list of windows.
 #[derive(
   Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ValueEnum,
@@ -434,6 +544,97 @@ mod tests {
       .collect()
   }
 
+  fn ones(count: usize) -> Vec<SizeWeight> {
+    vec![SizeWeight::default(); count]
+  }
+
+  fn weights(list: &[(f32, f32)]) -> Vec<SizeWeight> {
+    list
+      .iter()
+      .map(|&(width, height)| SizeWeight { width, height })
+      .collect()
+  }
+
+  #[test]
+  fn arrange_columns_and_rows_follow_the_weights() {
+    let weights = weights(&[(1., 3.), (2., 1.), (1., 1.)]);
+
+    let result = Layout::Columns.arrange(
+      &LayoutParams::default(),
+      &area(),
+      &weights,
+      (0, 0),
+    );
+    assert_eq!(
+      result,
+      rects(&[(0, 0, 250, 600), (250, 0, 500, 600), (750, 0, 250, 600)])
+    );
+
+    let result = Layout::Rows.arrange(
+      &LayoutParams::default(),
+      &area(),
+      &weights,
+      (0, 0),
+    );
+    assert_eq!(
+      result,
+      rects(&[
+        (0, 0, 1000, 360),
+        (0, 360, 1000, 120),
+        (0, 480, 1000, 120)
+      ])
+    );
+  }
+
+  #[test]
+  fn arrange_grid_follows_the_weights() {
+    // Columns hold windows [0, 1] and [2]. The first column is as wide as
+    // the mean width weight of its windows.
+    let weights = weights(&[(1., 3.), (3., 1.), (2., 1.)]);
+
+    let result = Layout::Grid.arrange(
+      &LayoutParams::default(),
+      &area(),
+      &weights,
+      (0, 0),
+    );
+    assert_eq!(
+      result,
+      rects(&[(0, 0, 500, 450), (0, 450, 500, 150), (500, 0, 500, 600)])
+    );
+  }
+
+  #[test]
+  fn grid_columns_split_the_windows() {
+    assert!(grid_columns(0).is_empty());
+    assert_eq!(grid_columns(1), vec![0..1]);
+    assert_eq!(grid_columns(3), vec![0..2, 2..3]);
+    assert_eq!(grid_columns(5), vec![0..2, 2..4, 4..5]);
+  }
+
+  #[test]
+  fn weight_for_length() {
+    // Two parts of weight 1 over 1000px: 750px needs 3 times the other.
+    let weight = SizeWeight::for_length(750, 1000, 1.).unwrap();
+    assert!((weight - 3.).abs() < 1e-6);
+
+    // The target and the result are clamped.
+    assert!(
+      (SizeWeight::for_length(5000, 1000, 1.).unwrap() - SizeWeight::MAX)
+        .abs()
+        < 1e-6
+    );
+    assert!(
+      (SizeWeight::for_length(-10, 1000, 1.).unwrap() - SizeWeight::MIN)
+        .abs()
+        < 1e-6
+    );
+
+    // A part alone in its span can't be resized.
+    assert_eq!(SizeWeight::for_length(500, 1000, 0.), None);
+    assert_eq!(SizeWeight::for_length(500, 1, 1.), None);
+  }
+
   #[test]
   fn ordinal_wraps_in_both_directions() {
     assert_eq!(Ordinal::Next.wrapping_step(0, 3), 1);
@@ -458,7 +659,7 @@ mod tests {
   fn arrange_zero_windows_is_empty() {
     for layout in Layout::CYCLE {
       let result =
-        layout.arrange(&LayoutParams::default(), &area(), 0, GAP);
+        layout.arrange(&LayoutParams::default(), &area(), &ones(0), GAP);
       assert!(result.is_empty(), "{layout:?}");
     }
   }
@@ -468,7 +669,7 @@ mod tests {
     for layout in Layout::CYCLE {
       for flip in [false, true] {
         let result =
-          layout.arrange(&params(0.55, 1, flip), &area(), 1, GAP);
+          layout.arrange(&params(0.55, 1, flip), &area(), &ones(1), GAP);
         assert_eq!(result, vec![area()], "{layout:?} flip={flip}");
       }
     }
@@ -515,7 +716,7 @@ mod tests {
 
     for (name, params, count, expected) in cases {
       let result =
-        Layout::MasterStack.arrange(&params, &area(), count, GAP);
+        Layout::MasterStack.arrange(&params, &area(), &ones(count), GAP);
       assert_eq!(result, expected, "{name}");
     }
   }
@@ -523,15 +724,23 @@ mod tests {
   #[test]
   fn arrange_columns_remainder_goes_to_last() {
     let area = Rect::from_xy(0, 0, 1001, 600);
-    let result =
-      Layout::Columns.arrange(&LayoutParams::default(), &area, 3, (0, 0));
+    let result = Layout::Columns.arrange(
+      &LayoutParams::default(),
+      &area,
+      &ones(3),
+      (0, 0),
+    );
     assert_eq!(
       result,
       rects(&[(0, 0, 333, 600), (333, 0, 333, 600), (666, 0, 335, 600)])
     );
 
-    let result =
-      Layout::Columns.arrange(&params(0.55, 1, true), &area, 3, (0, 0));
+    let result = Layout::Columns.arrange(
+      &params(0.55, 1, true),
+      &area,
+      &ones(3),
+      (0, 0),
+    );
     assert_eq!(
       result,
       rects(&[(668, 0, 333, 600), (335, 0, 333, 600), (0, 0, 335, 600)])
@@ -541,8 +750,12 @@ mod tests {
   #[test]
   fn arrange_rows_remainder_goes_to_last() {
     let area = Rect::from_xy(0, 0, 1000, 601);
-    let result =
-      Layout::Rows.arrange(&LayoutParams::default(), &area, 3, (0, 0));
+    let result = Layout::Rows.arrange(
+      &LayoutParams::default(),
+      &area,
+      &ones(3),
+      (0, 0),
+    );
     assert_eq!(
       result,
       rects(&[
@@ -552,8 +765,12 @@ mod tests {
       ])
     );
 
-    let result =
-      Layout::Rows.arrange(&params(0.55, 1, true), &area, 3, (0, 0));
+    let result = Layout::Rows.arrange(
+      &params(0.55, 1, true),
+      &area,
+      &ones(3),
+      (0, 0),
+    );
     assert_eq!(
       result,
       rects(&[
@@ -566,8 +783,12 @@ mod tests {
 
   #[test]
   fn arrange_monocle_fills_area() {
-    let result =
-      Layout::Monocle.arrange(&LayoutParams::default(), &area(), 3, GAP);
+    let result = Layout::Monocle.arrange(
+      &LayoutParams::default(),
+      &area(),
+      &ones(3),
+      GAP,
+    );
     assert_eq!(result, vec![area(); 3]);
   }
 
@@ -603,7 +824,7 @@ mod tests {
       let result = Layout::Grid.arrange(
         &LayoutParams::default(),
         &area(),
-        count,
+        &ones(count),
         GAP,
       );
       assert_eq!(result, expected, "{count} windows");
@@ -612,15 +833,23 @@ mod tests {
 
   #[test]
   fn arrange_dwindle() {
-    let result =
-      Layout::Dwindle.arrange(&params(0.5, 1, false), &area(), 3, GAP);
+    let result = Layout::Dwindle.arrange(
+      &params(0.5, 1, false),
+      &area(),
+      &ones(3),
+      GAP,
+    );
     assert_eq!(
       result,
       rects(&[(0, 0, 495, 600), (505, 0, 495, 295), (505, 305, 495, 295)])
     );
 
-    let result =
-      Layout::Dwindle.arrange(&params(0.5, 1, true), &area(), 3, GAP);
+    let result = Layout::Dwindle.arrange(
+      &params(0.5, 1, true),
+      &area(),
+      &ones(3),
+      GAP,
+    );
     assert_eq!(
       result,
       rects(&[(505, 0, 495, 600), (0, 0, 495, 295), (0, 305, 495, 295)])
@@ -633,7 +862,7 @@ mod tests {
     let result = Layout::Columns.arrange(
       &LayoutParams::default(),
       &area,
-      3,
+      &ones(3),
       (20, 20),
     );
     assert!(result.iter().all(|r| r.width() >= 1 && r.height() >= 1));
@@ -655,7 +884,7 @@ mod tests {
           let result = layout.arrange(
             &params(0.55, master_count, flip),
             &area,
-            count,
+            &ones(count),
             GAP,
           );
           let ctx = format!("{layout:?} count={count} flip={flip}");

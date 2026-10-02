@@ -9,7 +9,7 @@ use crate::{
   commands::{
     container::{move_container_within_tree, swap_tiling_windows},
     window::update_window_state,
-    workspace::resize_master_ratio,
+    workspace::resize_tiling_window,
   },
   events::update_floating_window_position,
   models::{NonTilingWindow, TilingWindow, WindowContainer, Workspace},
@@ -130,13 +130,17 @@ pub fn handle_window_moved_or_resized_end(
         Some(ActiveDragOperation::Resize) => {
           // The window's frame includes its borders, whereas its layout
           // rect does not.
-          let target_width = window
+          let target_rect = window
             .native_properties()
             .frame
-            .apply_delta(&window.total_border_delta()?.inverse(), None)
-            .width();
+            .apply_delta(&window.total_border_delta()?.inverse(), None);
 
-          resize_master_ratio(window, target_width, state)?;
+          resize_tiling_window(
+            window,
+            Some(target_rect.width()),
+            Some(target_rect.height()),
+            state,
+          )?;
         }
         None => {}
       }

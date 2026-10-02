@@ -7,8 +7,8 @@ use std::{
 use anyhow::Context;
 use uuid::Uuid;
 use wm_common::{
-  ActiveDrag, ContainerDto, DisplayState, WindowDto, WindowRuleConfig,
-  WindowState,
+  ActiveDrag, ContainerDto, DisplayState, SizeWeight, WindowDto,
+  WindowRuleConfig, WindowState,
 };
 use wm_platform::{NativeWindow, Rect, RectDelta};
 
@@ -39,6 +39,7 @@ struct TilingWindowInner {
   has_custom_floating_placement: bool,
   done_window_rules: Vec<WindowRuleConfig>,
   active_drag: Option<ActiveDrag>,
+  size_weight: SizeWeight,
 }
 
 impl TilingWindow {
@@ -70,6 +71,7 @@ impl TilingWindow {
       has_custom_floating_placement,
       done_window_rules,
       active_drag,
+      size_weight: SizeWeight::default(),
     };
 
     Self(Rc::new(RefCell::new(window)))
@@ -122,6 +124,20 @@ impl_common_getters!(TilingWindow);
 impl_window_getters!(TilingWindow);
 
 impl TilingWindow {
+  /// Relative size of the window within its workspace's layout.
+  pub fn size_weight(&self) -> SizeWeight {
+    self.0.borrow().size_weight
+  }
+
+  /// Sets the relative size of the window, clamping both weights to the
+  /// valid range.
+  pub fn set_size_weight(&self, size_weight: SizeWeight) {
+    self.0.borrow_mut().size_weight = SizeWeight {
+      width: SizeWeight::clamp(size_weight.width),
+      height: SizeWeight::clamp(size_weight.height),
+    };
+  }
+
   /// Index of this window amongst the tiling children of its workspace.
   ///
   /// This is the index of the window's rect in

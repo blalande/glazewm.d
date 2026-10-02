@@ -3,7 +3,7 @@ use wm_common::WindowState;
 use wm_platform::{LengthValue, Rect};
 
 use crate::{
-  commands::workspace::resize_master_ratio,
+  commands::workspace::resize_tiling_window,
   models::{NonTilingWindow, TilingWindow, WindowContainer},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   wm_state::WmState,
@@ -21,13 +21,12 @@ pub fn set_window_size(
 ) -> anyhow::Result<()> {
   match window {
     WindowContainer::TilingWindow(window) => {
-      if target_height.is_some() {
-        tracing::debug!("Ignoring height resize of a tiling window.");
-      }
-
-      if let Some(target_width) = target_width {
-        set_tiling_window_width(&window, &target_width, state)?;
-      }
+      set_tiling_window_size(
+        &window,
+        target_width.as_ref(),
+        target_height.as_ref(),
+        state,
+      )?;
     }
     WindowContainer::NonTilingWindow(window) => {
       if matches!(window.state(), WindowState::Floating(_)) {
@@ -44,22 +43,27 @@ pub fn set_window_size(
   Ok(())
 }
 
-/// Updates the width of a tiling window.
+/// Updates the size of a tiling window.
 ///
 /// The size of a tiling window is dictated by its workspace's layout, so
-/// the width can only be changed by resizing the master area (see
-/// `resize_master_ratio`). Relative widths (e.g. percentages) are relative
-/// to the workspace.
-fn set_tiling_window_width(
+/// it is changed through the layout (see `resize_tiling_window`). Relative
+/// lengths (e.g. percentages) are relative to the workspace.
+fn set_tiling_window_size(
   window: &TilingWindow,
-  target_width: &LengthValue,
+  target_width: Option<&LengthValue>,
+  target_height: Option<&LengthValue>,
   state: &mut WmState,
 ) -> anyhow::Result<()> {
-  let workspace = window.workspace().context("No workspace.")?;
-  let target_width_px =
-    target_width.to_px(workspace.to_rect()?.width(), None);
+  let workspace_rect =
+    window.workspace().context("No workspace.")?.to_rect()?;
 
-  resize_master_ratio(window, target_width_px, state)
+  resize_tiling_window(
+    window,
+    target_width.map(|width| width.to_px(workspace_rect.width(), None)),
+    target_height
+      .map(|height| height.to_px(workspace_rect.height(), None)),
+    state,
+  )
 }
 
 fn set_floating_window_size(

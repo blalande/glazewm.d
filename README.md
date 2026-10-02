@@ -339,8 +339,8 @@ A binding mode can be enabled with `wm-enable-binding-mode --name <NAME>` and di
 ```yaml
 binding_modes:
   # When enabled, the focused window can be resized via arrow keys or HJKL.
-  # Tiling windows can only be resized in width, which resizes the master
-  # area.
+  # Tiling windows are resized through their layout (e.g. the master area
+  # in `master_stack`, or the column width in `columns`).
   - name: "resize"
     keybindings:
       - commands: ["resize --width -2%"]
@@ -366,7 +366,7 @@ Right-click the GlazeWM icon in the system tray and select "Run on system startu
 
 Tiling windows are arranged automatically by the layout of their workspace: `master_stack`, `columns`, `rows`, `monocle`, `grid` or `dwindle`. The default layout is set with `general.default_layout`, and can be overridden per workspace with the `layout` key of a `workspaces` entry.
 
-The layout can be changed while GlazeWM is running with `set-layout <layout>` or `cycle-layout` (`alt+v` in the default config). The `adjust-master-ratio`, `adjust-master-count` and `flip-layout` commands tune the layout, and resizing a tiling window's width changes the master ratio.
+The layout can be changed while GlazeWM is running with `set-layout <layout>` or `cycle-layout` (`alt+v` in the default config). The `adjust-master-ratio`, `adjust-master-count` and `flip-layout` commands tune the layout, and resizing a tiling window goes through its layout: the width changes the master ratio in `master_stack` and `dwindle`, the column width in `columns`, the row height in `rows`, and both the column width and the row height in `grid`. Windows in `monocle` cannot be resized.
 
 Tiling windows are ordered, and new windows are inserted after the focused one. `focus --next` and `focus --previous` step through them, `move --next` and `move --previous` swap the focused window with its neighbour, and `promote` makes it the master window. All of these wrap around at the ends of the workspace, or continue onto the next or previous monitor when combined with `--cross-monitor`.
 

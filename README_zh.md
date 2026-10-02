@@ -330,7 +330,8 @@ window_behavior:
 ```yaml
 binding_modes:
   # 启用时，可以通过方向键或 HJKL 调整聚焦窗口的大小。
-  # 平铺窗口只能调整宽度，这会调整主区域的大小。
+  # 平铺窗口通过其布局调整大小（例如 `master_stack` 中的主区域，或
+  # `columns` 中的列宽）。
   - name: "resize"
     keybindings:
       - commands: ["resize --width -2%"]
@@ -356,7 +357,7 @@ binding_modes:
 
 平铺窗口由工作区的布局自动排列：`master_stack`、`columns`、`rows`、`monocle`、`grid` 或 `dwindle`。默认布局通过 `general.default_layout` 设置，也可以通过 `workspaces` 条目的 `layout` 键为每个工作区单独覆盖。
 
-可以在 GlazeWM 运行时使用 `set-layout <layout>` 或 `cycle-layout`（默认配置中为 `alt+v`）更改布局。`adjust-master-ratio`、`adjust-master-count` 和 `flip-layout` 命令用于调整布局，调整平铺窗口的宽度会改变主区域比例。
+可以在 GlazeWM 运行时使用 `set-layout <layout>` 或 `cycle-layout`（默认配置中为 `alt+v`）更改布局。`adjust-master-ratio`、`adjust-master-count` 和 `flip-layout` 命令用于调整布局，调整平铺窗口的大小通过其布局进行：在 `master_stack` 和 `dwindle` 中宽度改变主区域比例，在 `columns` 中改变列宽，在 `rows` 中改变行高，在 `grid` 中同时改变列宽和行高。`monocle` 中的窗口无法调整大小。
 
 平铺窗口是有序的，新窗口会插入到当前聚焦窗口之后。`focus --next` 和 `focus --previous` 在它们之间切换，`move --next` 和 `move --previous` 将聚焦窗口与相邻窗口交换，`promote` 使其成为主窗口。这些命令在工作区末端会循环，与 `--cross-monitor` 一起使用时则会继续到下一个或上一个显示器。
 

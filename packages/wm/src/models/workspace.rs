@@ -187,12 +187,15 @@ impl Workspace {
   pub fn layout_rects(&self) -> anyhow::Result<Vec<Rect>> {
     let area = self.to_rect()?;
     let inner_gap = self.inner_gaps()?;
-    let count = self.tiling_children().count();
+    let weights = self
+      .tiling_children()
+      .map(|window| window.size_weight())
+      .collect::<Vec<_>>();
 
     Ok(self.layout().arrange(
       &self.layout_params(),
       &area,
-      count,
+      &weights,
       inner_gap,
     ))
   }
@@ -305,6 +308,7 @@ impl std::fmt::Display for Workspace {
 
 #[cfg(test)]
 mod tests {
+  use wm_common::SizeWeight;
   use wm_platform::LengthValue;
 
   use super::*;
@@ -370,7 +374,7 @@ mod tests {
       Layout::MasterStack.arrange(
         &workspace.layout_params(),
         &area,
-        3,
+        &[SizeWeight::default(); 3],
         (10, 10)
       )
     );

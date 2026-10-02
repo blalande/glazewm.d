@@ -183,8 +183,8 @@ window_rules:
 
 binding_modes:
   # When enabled, the focused window can be resized via arrow keys or HJKL.
-  # Tiling windows can only be resized in width, which resizes the master
-  # area.
+  # Tiling windows are resized through their layout (e.g. the master area
+  # in `master_stack`, or the column width in `columns`).
   - name: 'resize'
     keybindings:
       - commands: ['resize --width -2%']
@@ -220,15 +220,15 @@ keybindings:
   - commands: ['promote']
     bindings: ['alt+shift+enter']
 
-  # Shrink/grow the master area of the `master_stack` and `dwindle`
-  # layouts.
-  - commands: ['adjust-master-ratio -0.05']
+  # Shrink/grow the focused tiling window through its layout (e.g. the
+  # master area in `master_stack`, or the column width in `columns`).
+  - commands: ['resize --width -5%']
     bindings: ['alt+h', 'alt+left']
-  - commands: ['adjust-master-ratio +0.05']
+  - commands: ['resize --width +5%']
     bindings: ['alt+l', 'alt+right']
 
   # Resize focused window by a percentage or pixel amount. Tiling windows
-  # can only be resized in width, which resizes the master area.
+  # are resized through their layout (see the `resize` binding mode).
   - commands: ['resize --width -2%']
     bindings: ['alt+u']
   - commands: ['resize --width +2%']

@@ -1,5 +1,8 @@
 use anyhow::Context;
-use wm_common::{Layout, LayoutParams, WmEvent};
+use wm_common::{
+  grid_column_widths, grid_columns, Layout, LayoutParams, SizeWeight,
+  WmEvent,
+};
 
 use crate::{
   models::{Container, TilingWindow, Workspace},
@@ -66,7 +69,7 @@ pub fn adjust_master_count(
 ///
 /// Stack windows deeper in the dwindle spiral only follow the ratio of the
 /// first split, so their resulting width is approximate.
-pub fn resize_master_ratio(
+fn resize_master_ratio(
   window: &TilingWindow,
   target_width: i32,
   state: &mut WmState,
@@ -114,6 +117,192 @@ pub fn resize_master_ratio(
   }
 
   adjust_master_ratio(&workspace.into(), ratio_delta, state)
+}
+
+/// Resizes a tiling window towards the given width and height (in
+/// pixels), as far as its workspace's layout allows.
+///
+/// - `MasterStack` and `Dwindle`: the width resizes the master area (see
+///   `resize_master_ratio`). The height is ignored.
+/// - `Columns`, `Rows` and `Grid`: the window's `SizeWeight` is updated
+///   (see `resize_size_weight`).
+/// - `Monocle`: windows fill the workspace and can't be resized.
+pub fn resize_tiling_window(
+  window: &TilingWindow,
+  target_width: Option<i32>,
+  target_height: Option<i32>,
+  state: &mut WmState,
+) -> anyhow::Result<()> {
+  let workspace = window.workspace().context("No workspace.")?;
+
+  match workspace.layout() {
+    Layout::MasterStack | Layout::Dwindle => {
+      if let Some(target_width) = target_width {
+        resize_master_ratio(window, target_width, state)?;
+      }
+    }
+    Layout::Columns | Layout::Rows | Layout::Grid => {
+      resize_size_weight(
+        window,
+        &workspace,
+        target_width,
+        target_height,
+        state,
+      )?;
+    }
+    Layout::Monocle => {}
+  }
+
+  Ok(())
+}
+
+/// Updates the `SizeWeight` of a tiling window so that it ends up with the
+/// given width and height, as far as the layout allows.
+///
+/// `Columns` only resizes widths, and `Rows` only heights. In `Grid`, the
+/// width resizes the window's whole column (by scaling the width weights
+/// of its windows alike), and the height resizes the window within its
+/// column. Lengths that are already reached are skipped, so that rounding
+/// doesn't drift the weights.
+fn resize_size_weight(
+  window: &TilingWindow,
+  workspace: &Workspace,
+  target_width: Option<i32>,
+  target_height: Option<i32>,
+  state: &mut WmState,
+) -> anyhow::Result<()> {
+  let layout = workspace.layout();
+  let index = window.tiling_index().context("No tiling index.")?;
+  let windows = workspace.tiling_children().collect::<Vec<_>>();
+  let weights = windows
+    .iter()
+    .map(TilingWindow::size_weight)
+    .collect::<Vec<_>>();
+
+  let rect = window.to_rect()?;
+  let area = workspace.to_rect()?;
+  let (gap_x, gap_y) = workspace.inner_gaps()?;
+
+  // Windows in the same `Grid` column as the window.
+  let column = grid_columns(windows.len())
+    .into_iter()
+    .enumerate()
+    .find(|(_, range)| range.contains(&index))
+    .context("Window is not in a grid column.")?;
+
+  let mut is_changed = false;
+
+  if let Some(target_width) = target_width.filter(|&w| w != rect.width()) {
+    match layout {
+      Layout::Columns => {
+        let widths = weights.iter().map(|w| w.width).collect::<Vec<_>>();
+
+        if let Some(width) =
+          solve_weight(&widths, index, target_width, area.width(), gap_x)
+        {
+          window.set_size_weight(SizeWeight {
+            width,
+            ..weights[index]
+          });
+          is_changed = true;
+        }
+      }
+      Layout::Grid => {
+        let (column_index, range) = &column;
+        let widths = grid_column_widths(&weights);
+
+        if let Some(width) = solve_weight(
+          &widths,
+          *column_index,
+          target_width,
+          area.width(),
+          gap_x,
+        ) {
+          let scale = width / widths[*column_index];
+
+          for (sibling, weight) in
+            windows[range.clone()].iter().zip(&weights[range.clone()])
+          {
+            sibling.set_size_weight(SizeWeight {
+              width: weight.width * scale,
+              ..*weight
+            });
+          }
+
+          is_changed = true;
+        }
+      }
+      _ => {}
+    }
+  }
+
+  if let Some(target_height) =
+    target_height.filter(|&h| h != rect.height())
+  {
+    // Windows sharing the workspace height with the window.
+    let range = match layout {
+      Layout::Rows => Some(0..windows.len()),
+      Layout::Grid => Some(column.1.clone()),
+      _ => None,
+    };
+
+    if let Some(range) = range {
+      let heights = weights[range.clone()]
+        .iter()
+        .map(|w| w.height)
+        .collect::<Vec<_>>();
+
+      if let Some(height) = solve_weight(
+        &heights,
+        index - range.start,
+        target_height,
+        area.height(),
+        gap_y,
+      ) {
+        window.set_size_weight(SizeWeight {
+          height,
+          ..window.size_weight()
+        });
+        is_changed = true;
+      }
+    }
+  }
+
+  if is_changed {
+    state
+      .pending_sync
+      .queue_container_to_redraw(workspace.clone());
+  }
+
+  Ok(())
+}
+
+/// Computes the weight that sizes part `index` of `weights` to `target`
+/// pixels, when the parts split a `span` of pixels with `gap` pixels
+/// between them.
+///
+/// Returns `None` if the part can't be resized (see
+/// `SizeWeight::for_length`).
+fn solve_weight(
+  weights: &[f32],
+  index: usize,
+  target: i32,
+  span: i32,
+  gap: i32,
+) -> Option<f32> {
+  let gap_count = i32::try_from(weights.len().saturating_sub(1)).ok()?;
+  let others = weights
+    .iter()
+    .enumerate()
+    .filter(|(i, _)| *i != index)
+    .map(|(_, weight)| weight)
+    .sum();
+
+  SizeWeight::for_length(
+    target,
+    span.saturating_sub(gap.max(0).saturating_mul(gap_count)),
+    others,
+  )
 }
 
 /// Mirrors the layout of the workspace that the container belongs to.
@@ -402,5 +591,90 @@ mod tests {
     let width = windows[2].to_rect().unwrap().width();
     resize_master_ratio(&windows[2], width + 168, &mut state).unwrap();
     assert!((ratio(&workspace) - 0.5).abs() < 1e-4);
+  }
+
+  fn width(window: &TilingWindow) -> i32 {
+    window.to_rect().unwrap().width()
+  }
+
+  fn height(window: &TilingWindow) -> i32 {
+    window.to_rect().unwrap().height()
+  }
+
+  #[test]
+  fn resizing_a_column_updates_its_width_weight() {
+    let mut state = mock_state();
+    let (workspace, windows) = workspace_with_windows(Layout::Columns, 3);
+    let area = workspace.to_rect().unwrap();
+
+    // Half of the width needs as much weight as the 2 other columns.
+    let target = area.width() / 2;
+    resize_tiling_window(&windows[1], Some(target), Some(100), &mut state)
+      .unwrap();
+
+    assert!((windows[1].size_weight().width - 2.).abs() < 1e-4);
+    assert!((windows[1].size_weight().height - 1.).abs() < f32::EPSILON);
+    assert!((width(&windows[1]) - target).abs() <= 1);
+    assert_eq!(width(&windows[0]), width(&windows[2]));
+    assert!(state.pending_sync.has_changes());
+  }
+
+  #[test]
+  fn resizing_a_row_updates_its_height_weight() {
+    let mut state = mock_state();
+    let (workspace, windows) = workspace_with_windows(Layout::Rows, 3);
+    let area = workspace.to_rect().unwrap();
+
+    let target = area.height() / 2;
+    resize_tiling_window(&windows[0], Some(100), Some(target), &mut state)
+      .unwrap();
+
+    assert!((windows[0].size_weight().width - 1.).abs() < f32::EPSILON);
+    assert!((height(&windows[0]) - target).abs() <= 1);
+  }
+
+  #[test]
+  fn resizing_a_grid_window_resizes_its_column_and_row() {
+    let mut state = mock_state();
+    // Columns hold windows [0, 1] and [2].
+    let (workspace, windows) = workspace_with_windows(Layout::Grid, 3);
+    let area = workspace.to_rect().unwrap();
+
+    let target_width = area.width() * 3 / 4;
+    let target_height = area.height() / 4;
+    resize_tiling_window(
+      &windows[1],
+      Some(target_width),
+      Some(target_height),
+      &mut state,
+    )
+    .unwrap();
+
+    // The whole column is wider, and the window shorter within it.
+    assert!((width(&windows[0]) - target_width).abs() <= 1);
+    assert!((width(&windows[1]) - target_width).abs() <= 1);
+    assert!((height(&windows[1]) - target_height).abs() <= 1);
+    assert_eq!(height(&windows[2]), area.height());
+  }
+
+  #[test]
+  fn unchanged_lengths_and_monocle_are_left_untouched() {
+    let (_, windows) = workspace_with_windows(Layout::Columns, 2);
+    let mut state = mock_state();
+    resize_tiling_window(
+      &windows[0],
+      Some(width(&windows[0])),
+      None,
+      &mut state,
+    )
+    .unwrap();
+    assert_eq!(windows[0].size_weight(), SizeWeight::default());
+    assert!(!state.pending_sync.has_changes());
+
+    let (_, windows) = workspace_with_windows(Layout::Monocle, 2);
+    resize_tiling_window(&windows[0], Some(100), Some(100), &mut state)
+      .unwrap();
+    assert_eq!(windows[0].size_weight(), SizeWeight::default());
+    assert!(!state.pending_sync.has_changes());
   }
 }
