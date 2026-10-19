@@ -214,7 +214,7 @@ keybindings:
   - commands: ['move --next --cross-monitor']
     bindings: ['alt+shift+j', 'alt+shift+down']
   - commands: ['move --previous --cross-monitor']
-    bindings: ['alt+shift+k', 'alt+shift+up']
+    bindings: ['alt+shift+up']
 
   # Make the focused tiling window the master window of the workspace.
   - commands: ['promote']
@@ -288,6 +288,15 @@ keybindings:
   # Redraw all windows.
   - commands: ['wm-redraw']
     bindings: ['alt+shift+w']
+
+  # Show all keybindings in an overlay. Press escape to close it. The
+  # optional `comment` of a keybinding is shown instead of its commands,
+  # and keybindings are listed by their optional `group` (defaults to
+  # "Generic Keybinding").
+  - commands: ['wm-show-keybindings']
+    bindings: ['alt+shift+k']
+    comment: 'Show keybindings'
+    group: 'General'
 
   # Launch CMD terminal. Alternatively, use `shell-exec wt` or
   # `shell-exec %ProgramFiles%/Git/git-bash.exe` to start Windows

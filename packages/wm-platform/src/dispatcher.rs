@@ -51,6 +51,8 @@ use crate::platform_impl::Application;
 use crate::{
   platform_impl, Display, DisplayDevice, MouseButton, NativeWindow, Point,
 };
+#[cfg(target_os = "windows")]
+use crate::{OverlaySection, Rect};
 
 /// Type alias for a closure to be executed by the event loop.
 pub type DispatchFn = dyn FnOnce() + Send + 'static;
@@ -178,10 +180,38 @@ pub trait DispatcherExtWindows {
     directory: &Path,
     hide_window: bool,
   ) -> crate::Result<()>;
+
+  /// Shows an overlay listing `sections`, centered within `working_area`
+  /// and scaled by `scale_factor`.
+  ///
+  /// The overlay is shown on top of all windows without taking focus,
+  /// and closes when escape is pressed or when it is clicked. Replaces
+  /// the overlay if one is already shown.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn show_overlay(
+    &self,
+    sections: Vec<OverlaySection>,
+    working_area: Rect,
+    scale_factor: f32,
+  ) -> crate::Result<()>;
 }
 
 #[cfg(target_os = "windows")]
 impl DispatcherExtWindows for Dispatcher {
+  fn show_overlay(
+    &self,
+    sections: Vec<OverlaySection>,
+    working_area: Rect,
+    scale_factor: f32,
+  ) -> crate::Result<()> {
+    self.dispatch_sync(move || {
+      platform_impl::show_overlay(&sections, &working_area, scale_factor)
+    })?
+  }
+
   fn message_window_handle(&self) -> isize {
     self.source.as_ref().unwrap().message_window_handle
   }

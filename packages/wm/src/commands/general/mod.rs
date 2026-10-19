@@ -4,6 +4,8 @@ mod enable_binding_mode;
 mod platform_sync;
 mod reload_config;
 mod shell_exec;
+#[cfg(target_os = "windows")]
+mod show_keybindings;
 mod toggle_pause;
 
 pub use cycle_focus::*;
@@ -12,4 +14,6 @@ pub use enable_binding_mode::*;
 pub use platform_sync::*;
 pub use reload_config::*;
 pub use shell_exec::*;
+#[cfg(target_os = "windows")]
+pub use show_keybindings::*;
 pub use toggle_pause::*;

@@ -166,6 +166,14 @@ pub struct KeybindingConfig {
 
   /// WM commands to run when the keybinding is triggered.
   pub commands: Vec<InvokeCommand>,
+
+  /// Description shown instead of the commands by
+  /// `wm-show-keybindings`.
+  pub comment: Option<String>,
+
+  /// Group that the keybinding is listed under by
+  /// `wm-show-keybindings`.
+  pub group: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

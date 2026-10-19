@@ -280,6 +280,11 @@ pub enum InvokeCommand {
   WmExit,
   WmRedraw,
   WmReloadConfig,
+  /// Shows the keybindings of the user config in an overlay centered on
+  /// the focused monitor. The overlay closes when escape is pressed.
+  ///
+  /// Only supported on Windows.
+  WmShowKeybindings,
   WmTogglePause,
 }
 

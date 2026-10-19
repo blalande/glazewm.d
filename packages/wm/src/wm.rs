@@ -794,6 +794,17 @@ impl WindowManager {
         Ok(())
       }
       InvokeCommand::WmReloadConfig => reload_config(state, config),
+      InvokeCommand::WmShowKeybindings => {
+        #[cfg(target_os = "windows")]
+        {
+          crate::commands::general::show_keybindings(state, config)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+          warn!("`wm-show-keybindings` is only supported on Windows.");
+          Ok(())
+        }
+      }
       InvokeCommand::WmTogglePause => {
         toggle_pause(state);
         Ok(())

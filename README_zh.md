@@ -363,6 +363,8 @@ binding_modes:
 
 `swap-workspace` 将聚焦的工作区与另一个显示器上的工作区交换，使两者互换位置。另一个工作区可以通过 `--workspace <name>` 指定，或通过 `--next-monitor`、`--prev-monitor` 指定为相邻显示器上显示的工作区。焦点会跟随原本聚焦的工作区。
 
+`wm-show-keybindings`（默认配置中为 `alt+shift+k`）会在聚焦显示器中央的浮层中列出配置文件中的快捷键，包括绑定模式中的快捷键，分两列显示。若快捷键设置了可选的 `comment`，则显示该注释而非其命令；快捷键按可选的 `group` 分组显示（未设置时归入 "Generic Keybinding"）。在绑定模式中，仅当其快捷键使用多个分组时才显示分组。按 Esc 或点击浮层即可关闭。该命令仅在 Windows 上可用。
+
 平铺方向命令（`toggle-tiling-direction` 和 `set-tiling-direction`）以及 `tiling-direction` 查询已被移除。使用它们的快捷键需要替换，例如替换为 `cycle-layout`。
 
 Zebar 内置的 GlazeWM 提供程序仍依赖已移除的 `tiling-direction` 查询，因此无法再使用。请改用 [`glazewm-dynamic`](./resources/zebar/glazewm-dynamic) 小部件包：它直接通过 IPC 与 GlazeWM 通信，并显示当前工作区的布局（点击可切换布局）。将该文件夹复制到 `~/.glzr/zebar/`，然后在 Zebar 设置中选择该包。
