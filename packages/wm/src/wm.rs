@@ -33,7 +33,7 @@ use crate::{
     workspace::{
       adjust_master_count, adjust_master_ratio, cycle_layout, flip_layout,
       focus_workspace, move_workspace_in_direction, set_layout,
-      swap_workspace, update_workspace_config,
+      summon_workspace, swap_workspace, update_workspace_config,
     },
   },
   events::{
@@ -468,6 +468,12 @@ impl WindowManager {
           subject_container.workspace().context("No workspace.")?;
 
         swap_workspace(&workspace, args, state, config)
+      }
+      InvokeCommand::SummonWorkspace { workspace } => {
+        let monitor =
+          subject_container.monitor().context("No monitor.")?;
+
+        summon_workspace(workspace, &monitor, state, config)
       }
       InvokeCommand::Position(args) => {
         match subject_container.as_window_container() {
