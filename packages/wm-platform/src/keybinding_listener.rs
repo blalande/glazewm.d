@@ -16,7 +16,7 @@ use crate::{
 /// `Key::Shift`) to all its variants (e.g. `Key::LShift`, `Key::RShift`).
 ///
 /// `Cmd` and `Win` are treated as aliases within the same group.
-const MODIFIER_GROUPS: &[(Key, &[Key])] = &[
+pub(crate) const MODIFIER_GROUPS: &[(Key, &[Key])] = &[
   (Key::Shift, &[Key::Shift, Key::LShift, Key::RShift]),
   (Key::Ctrl, &[Key::Ctrl, Key::LCtrl, Key::RCtrl]),
   (Key::Alt, &[Key::Alt, Key::LAlt, Key::RAlt]),

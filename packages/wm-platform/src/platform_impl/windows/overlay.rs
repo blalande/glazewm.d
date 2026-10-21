@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::{cell::RefCell, ops::Range};
 
 use windows::{
   core::{w, PCWSTR},
@@ -12,36 +12,72 @@ use windows::{
       Gdi::{
         BeginPaint, CreateCompatibleDC, CreateFontIndirectW,
         CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint,
-        FillRect, GetTextExtentPoint32W, SelectObject, SetBkMode,
-        SetTextColor, DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE,
-        DT_VCENTER, FW_NORMAL, FW_SEMIBOLD, HBRUSH, HDC, HFONT, LOGFONTW,
-        PAINTSTRUCT, TRANSPARENT,
+        FillRect, GetDC, GetStockObject, GetTextExtentPoint32W,
+        InvalidateRect, ReleaseDC, RoundRect, SelectObject, SetBkMode,
+        SetTextColor, DRAW_TEXT_FORMAT, DT_CALCRECT, DT_EDITCONTROL,
+        DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER,
+        DT_WORDBREAK, FW_NORMAL, FW_SEMIBOLD, HBRUSH, HDC, HFONT,
+        LOGFONTW, NULL_PEN, PAINTSTRUCT, TRANSPARENT,
       },
     },
-    UI::WindowsAndMessaging::{
-      CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW,
-      ShowWindow, SW_SHOWNOACTIVATE, WM_DESTROY, WM_LBUTTONDOWN, WM_PAINT,
-      WM_RBUTTONDOWN, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-      WS_EX_TOPMOST, WS_POPUP,
+    UI::{
+      Input::KeyboardAndMouse::{
+        TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+      },
+      WindowsAndMessaging::{
+        CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect,
+        RegisterClassW, ShowWindow, SW_SHOWNOACTIVATE, WM_DESTROY,
+        WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONDOWN, WNDCLASSW,
+        WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+      },
     },
   },
 };
 
-use crate::{OverlaySection, Rect};
+use super::keyboard_layout::{
+  physical_keys, PhysicalKey, KEYBOARD_HEIGHT, KEYBOARD_WIDTH,
+};
+use crate::{
+  keybinding_listener::MODIFIER_GROUPS, Key, OverlaySection,
+  OverlaySectionStyle, Rect,
+};
 
 const BACKGROUND_COLOR: COLORREF = COLORREF(0x002E_1E1E);
 const TEXT_COLOR: COLORREF = COLORREF(0x00F4_D6CD);
 const ACCENT_COLOR: COLORREF = COLORREF(0x00FA_B489);
+const DIM_TEXT_COLOR: COLORREF = COLORREF(0x0086_706C);
+const IDLE_KEY_COLOR: COLORREF = COLORREF(0x0044_3231);
+const BOUND_KEY_COLOR: COLORREF = COLORREF(0x005A_4745);
+const HINT_COLOR: COLORREF = COLORREF(0x0070_5B58);
 
 /// Font size, padding and gaps in logical pixels (i.e. at 100% scale).
 const FONT_SIZE: f32 = 15.;
 const LINE_HEIGHT: f32 = 24.;
+const TITLE_HEIGHT: f32 = 32.;
 const PADDING: f32 = 24.;
+const SECTION_GAP: f32 = 32.;
 const CELL_GAP: f32 = 16.;
-const COLUMN_GAP: f32 = 40.;
+const HINT_PADDING: f32 = 8.;
+const HINT_MAX_WIDTH: f32 = 360.;
 
-/// Number of columns that the content is split into, if it fits.
-const COLUMN_COUNT: usize = 2;
+/// Widest action of a list in logical pixels, beyond which it is
+/// truncated (and shown in full on hover).
+const LIST_ACTION_MAX_WIDTH: f32 = 360.;
+
+/// Largest key size in logical pixels, used when the keyboards would
+/// otherwise grow larger.
+const MAX_KEY_SIZE: f32 = 72.;
+
+/// Sizes relative to the key size.
+const KEY_MARGIN: f32 = 0.05;
+const KEY_PADDING: f32 = 0.08;
+const LEGEND_FONT_SIZE: f32 = 0.24;
+const ACTION_FONT_SIZE: f32 = 0.18;
+
+/// Message sent when the mouse leaves a window that requested it with
+/// `TrackMouseEvent` (not exposed by the `windows` crate's enabled
+/// features).
+const WM_MOUSELEAVE: u32 = 0x02A3;
 
 /// Percentage of the working area that the overlay may cover at most.
 const MAX_AREA_PERCENT: i32 = 95;
@@ -56,34 +92,126 @@ thread_local! {
 /// State of a shown overlay window.
 struct OverlayState {
   hwnd: HWND,
-  title_font: HFONT,
-  text_font: HFONT,
-  background: HBRUSH,
+  fonts: Fonts,
+  brushes: Brushes,
+  metrics: Metrics,
   items: Vec<DrawItem>,
+  hints: Vec<Hint>,
+
+  /// Index in `hints` of the hovered hint, and the rect of its box.
+  hovered: Option<(usize, RECT)>,
 }
 
-/// A piece of text to draw at a fixed position in the overlay.
+struct Fonts {
+  title: HFONT,
+  text: HFONT,
+  legend: HFONT,
+  action: HFONT,
+}
+
+struct Brushes {
+  background: HBRUSH,
+  idle_key: HBRUSH,
+  bound_key: HBRUSH,
+  held_key: HBRUSH,
+  hint: HBRUSH,
+}
+
+/// Something to draw at a fixed position in the overlay.
 struct DrawItem {
-  text: Vec<u16>,
+  kind: ItemKind,
   rect: RECT,
-  kind: LineKind,
+  text: Vec<u16>,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum LineKind {
+#[derive(Clone, Copy)]
+enum ItemKind {
   Title,
-  Label,
-  Value,
+  KeyCap(KeyState),
+  Legend(KeyState),
+  Action,
+  ListKey,
+  ListAction,
 }
 
-/// A line of the overlay's content, prior to positioning.
-enum Line<'a> {
-  Spacer,
-  Title(&'a str),
-  Row(&'a str, &'a str),
+/// How a key of the keyboard picture is highlighted.
+#[derive(Clone, Copy)]
+enum KeyState {
+  Idle,
+  Bound,
+  Held,
 }
 
-/// Shows an overlay listing `sections`, centered within `working_area`.
+/// Full text shown in a box when hovering `target`.
+struct Hint {
+  target: RECT,
+  text: Vec<u16>,
+}
+
+/// Overlay sizes in physical pixels.
+struct Metrics {
+  padding: i32,
+  section_gap: i32,
+  title_height: i32,
+  line_height: i32,
+  cell_gap: i32,
+  hint_padding: i32,
+  hint_max_width: i32,
+  list_action_max_width: i32,
+}
+
+/// Keybindings listed as a column of trigger keys and a column of
+/// actions, measured with the overlay's fonts.
+struct List<'a> {
+  title: Option<&'a str>,
+  lines: Vec<ListLine<'a>>,
+  title_width: i32,
+
+  /// Width of the widest key label.
+  key_width: i32,
+
+  /// Width of the widest action.
+  action_width: i32,
+}
+
+/// A trigger key and its action in a `List`.
+struct ListLine<'a> {
+  key: String,
+  action: &'a str,
+  action_width: i32,
+}
+
+impl List<'_> {
+  /// Width of the list, with actions truncated to
+  /// `list_action_max_width`.
+  fn width(&self, metrics: &Metrics) -> i32 {
+    let action_width =
+      self.action_width.min(metrics.list_action_max_width);
+
+    self
+      .title_width
+      .max(self.key_width + metrics.cell_gap + action_width)
+  }
+
+  /// Height of the list, including its title.
+  fn height(&self, metrics: &Metrics) -> i32 {
+    let title_height = if self.title.is_some() {
+      metrics.title_height
+    } else {
+      0
+    };
+
+    title_height
+      + metrics.line_height * i32::try_from(self.lines.len()).unwrap_or(0)
+  }
+}
+
+/// Shows an overlay with the keybindings of `sections`, centered within
+/// `working_area`.
+///
+/// Sections are shown as keyboard pictures in a grid, followed by those
+/// shown as lists. Hovering a bound key or a truncated action shows its
+/// full text.
 ///
 /// Replaces the overlay if one is already shown. The overlay is topmost,
 /// never takes focus, and closes when escape is pressed (see
@@ -97,52 +225,137 @@ pub(crate) fn show_overlay(
 ) -> crate::Result<()> {
   close_overlay();
 
-  let scale = |value: f32| {
-    // LINT: Values are small positive pixel sizes.
-    #[allow(clippy::cast_possible_truncation)]
-    let scaled = (value * scale_factor).round() as i32;
-    scaled
+  let scale = |value: f32| to_px(value * scale_factor);
+
+  let metrics = Metrics {
+    padding: scale(PADDING),
+    section_gap: scale(SECTION_GAP),
+    title_height: scale(TITLE_HEIGHT),
+    line_height: scale(LINE_HEIGHT),
+    cell_gap: scale(CELL_GAP),
+    hint_padding: scale(HINT_PADDING),
+    hint_max_width: scale(HINT_MAX_WIDTH),
+    list_action_max_width: scale(LIST_ACTION_MAX_WIDTH),
   };
+
+  let max_width = working_area.width() * MAX_AREA_PERCENT / 100;
+  let max_height = working_area.height() * MAX_AREA_PERCENT / 100;
+  let content_width = max_width - 2 * metrics.padding;
 
   let title_font = create_font(scale(FONT_SIZE), FW_SEMIBOLD.0)?;
   let text_font = create_font(scale(FONT_SIZE), FW_NORMAL.0)?;
 
-  let max_width = working_area.width() * MAX_AREA_PERCENT / 100;
-  let max_height = working_area.height() * MAX_AREA_PERCENT / 100;
+  let physical_keys = physical_keys();
+  let (keyboards, lists) =
+    measure_sections(sections, &physical_keys, title_font, text_font)?;
 
-  let padding = scale(PADDING);
-  let line_height = scale(LINE_HEIGHT);
-  let max_lines =
-    usize::try_from(((max_height - 2 * padding) / line_height).max(2))
-      .unwrap_or(2);
+  let list_rows = flow_rows(
+    &lists
+      .iter()
+      .map(|list| list.width(&metrics))
+      .collect::<Vec<_>>(),
+    content_width,
+    metrics.section_gap,
+  );
 
-  let columns = balanced_columns(sections, max_lines);
+  let lists_height = list_rows
+    .iter()
+    .map(|row| row_height(&lists[row.clone()], &metrics))
+    .sum::<i32>()
+    + gaps(list_rows.len()) * metrics.section_gap;
 
-  let (items, width, height) = layout_items(
-    &columns,
-    title_font,
-    text_font,
-    padding,
-    line_height,
-    scale(CELL_GAP),
-    scale(COLUMN_GAP),
+  let keyboards_max_height = if lists.is_empty() {
+    max_height
+  } else {
+    max_height - lists_height - metrics.section_gap
+  };
+
+  let (column_count, key_size) = fit_grid(
+    &keyboards
+      .iter()
+      .map(|(_, extras)| extras.lines.len())
+      .collect::<Vec<_>>(),
+    &metrics,
     max_width,
-  )?;
+    keyboards_max_height,
+    MAX_KEY_SIZE * scale_factor,
+  );
 
-  // ponytail: labels wider than their column are clipped; add wrapping
-  // if bindings grow that long.
-  let rect = Rect::from_xy(0, 0, width.min(max_width), height)
-    .translate_to_center(working_area);
+  let fonts = Fonts {
+    title: title_font,
+    text: text_font,
+    legend: create_font(
+      to_px(key_size * LEGEND_FONT_SIZE).max(1),
+      FW_SEMIBOLD.0,
+    )?,
+    action: create_font(
+      to_px(key_size * ACTION_FONT_SIZE).max(1),
+      FW_NORMAL.0,
+    )?,
+  };
 
-  let hwnd = create_window(&rect)?;
+  let mut layout = Layout {
+    items: Vec::new(),
+    hints: Vec::new(),
+    metrics: &metrics,
+  };
+
+  let (keyboards_width, keyboards_height) = layout.push_keyboards(
+    &keyboards,
+    &physical_keys,
+    column_count,
+    key_size,
+  );
+
+  let lists_top = if keyboards.is_empty() {
+    metrics.padding
+  } else {
+    metrics.padding + keyboards_height + metrics.section_gap
+  };
+
+  let lists_width = layout.push_lists(&lists, &list_rows, lists_top);
+
+  let width = 2 * metrics.padding + keyboards_width.max(lists_width);
+  let height = if lists.is_empty() {
+    2 * metrics.padding + keyboards_height
+  } else {
+    lists_top + lists_height + metrics.padding
+  };
+
+  let Layout { items, hints, .. } = layout;
+
+  let rect =
+    Rect::from_xy(0, 0, width, height).translate_to_center(working_area);
+
+  open_window(&rect, fonts, metrics, items, hints)
+}
+
+/// Creates and shows the overlay window at `rect`, with the given
+/// content.
+fn open_window(
+  rect: &Rect,
+  fonts: Fonts,
+  metrics: Metrics,
+  items: Vec<DrawItem>,
+  hints: Vec<Hint>,
+) -> crate::Result<()> {
+  let hwnd = create_window(rect)?;
 
   OVERLAY.with(|overlay| {
     *overlay.borrow_mut() = Some(OverlayState {
       hwnd,
-      title_font,
-      text_font,
-      background: unsafe { CreateSolidBrush(BACKGROUND_COLOR) },
+      fonts,
+      brushes: Brushes {
+        background: unsafe { CreateSolidBrush(BACKGROUND_COLOR) },
+        idle_key: unsafe { CreateSolidBrush(IDLE_KEY_COLOR) },
+        bound_key: unsafe { CreateSolidBrush(BOUND_KEY_COLOR) },
+        held_key: unsafe { CreateSolidBrush(ACCENT_COLOR) },
+        hint: unsafe { CreateSolidBrush(HINT_COLOR) },
+      },
+      metrics,
       items,
+      hints,
+      hovered: None,
     });
   });
 
@@ -188,181 +401,494 @@ pub(crate) fn close_overlay() -> bool {
   true
 }
 
-/// Distributes the sections' lines across `COLUMN_COUNT` columns of
-/// similar height.
+/// Whether pressing `key` is done with `physical_key`.
 ///
-/// More columns are used if the lines don't fit within `max_lines` per
-/// column.
-fn balanced_columns(
-  sections: &[OverlaySection],
-  max_lines: usize,
-) -> Vec<Vec<Line<'_>>> {
-  // Titles, rows, and a spacer between each pair of sections.
-  let total_lines = sections
-    .iter()
-    .map(|section| section.rows.len() + 2)
-    .sum::<usize>()
-    .saturating_sub(1);
+/// Generic modifiers (e.g. `Key::Alt`) match both their left and right
+/// keys.
+fn physical_key_matches(physical_key: &PhysicalKey, key: Key) -> bool {
+  let Some(physical) = physical_key.key else {
+    return false;
+  };
 
-  // Grow the column height until the lines fit in `COLUMN_COUNT`
-  // columns, since titles are never split from their first row.
-  let mut lines = total_lines.div_ceil(COLUMN_COUNT).clamp(2, max_lines);
-
-  loop {
-    let columns = split_into_columns(sections, lines);
-
-    if columns.len() <= COLUMN_COUNT || lines >= max_lines {
-      return columns;
-    }
-
-    lines += 1;
-  }
+  physical == key
+    || MODIFIER_GROUPS.iter().any(|(generic, variants)| {
+      *generic == key && variants.contains(&physical)
+    })
 }
 
-/// Distributes the sections' lines across columns of at most
-/// `max_lines` lines each.
+/// A keyboard section, with the list of its bindings whose keys aren't
+/// on the keyboard picture.
+type KeyboardSection<'a> = (&'a OverlaySection, List<'a>);
+
+/// Measures the sections' lists.
 ///
-/// A title is never left as the last line of a column, and sections are
-/// separated by a spacer unless they start a column.
-fn split_into_columns(
-  sections: &[OverlaySection],
-  max_lines: usize,
-) -> Vec<Vec<Line<'_>>> {
-  let mut columns = Vec::new();
-  let mut column = Vec::new();
-
-  for section in sections {
-    let lines = std::iter::once(Line::Title(&section.title)).chain(
-      section
-        .rows
-        .iter()
-        .map(|(label, value)| Line::Row(label, value)),
-    );
-
-    for line in lines {
-      let is_title = matches!(line, Line::Title(_));
-
-      // Space needed for the line, including a spacer before a title
-      // and the first row after it.
-      let needed = match (is_title, column.is_empty()) {
-        (true, true) => 2,
-        (true, false) => 3,
-        (false, _) => 1,
-      };
-
-      if !column.is_empty() && column.len() + needed > max_lines {
-        columns.push(std::mem::take(&mut column));
-      }
-
-      if is_title && !column.is_empty() {
-        column.push(Line::Spacer);
-      }
-
-      column.push(line);
-    }
-  }
-
-  columns.push(column);
-  columns
-}
-
-/// Positions the lines of each column.
-///
-/// Returns the items to draw, and the total width and height of the
-/// overlay.
-#[allow(clippy::too_many_arguments)]
-fn layout_items(
-  columns: &[Vec<Line>],
+/// Returns the keyboard sections with their extra lines, and the list
+/// sections, each in their original order.
+fn measure_sections<'a>(
+  sections: &'a [OverlaySection],
+  physical_keys: &[PhysicalKey],
   title_font: HFONT,
   text_font: HFONT,
-  padding: i32,
-  line_height: i32,
-  cell_gap: i32,
-  column_gap: i32,
-  max_width: i32,
-) -> crate::Result<(Vec<DrawItem>, i32, i32)> {
+) -> crate::Result<(Vec<KeyboardSection<'a>>, Vec<List<'a>>)> {
   let hdc = unsafe { CreateCompatibleDC(None) };
-  let mut items = Vec::new();
-  let mut x = padding;
-  let mut max_column_lines = 0;
 
-  // Columns share the available width equally at most. Values and titles
-  // beyond it are truncated with an ellipsis.
-  let column_count = i32::try_from(columns.len()).unwrap_or(1).max(1);
-  let max_column_width =
-    (max_width - 2 * padding - column_gap * (column_count - 1))
-      / column_count;
+  let keyboards = sections
+    .iter()
+    .filter(|section| section.style == OverlaySectionStyle::Keyboard)
+    .map(|section| {
+      let extras = section.bindings.iter().filter(|(key, _)| {
+        !physical_keys
+          .iter()
+          .any(|physical| physical_key_matches(physical, *key))
+      });
 
-  for column in columns {
-    let mut label_width = 0;
-    let mut value_width = 0;
-    let mut title_width = 0;
+      let extras = measure_list(
+        hdc,
+        title_font,
+        text_font,
+        None,
+        extras,
+        physical_keys,
+      );
 
-    for line in column {
-      match line {
-        Line::Title(title) => {
-          title_width =
-            title_width.max(text_width(hdc, title_font, title));
-        }
-        Line::Row(label, value) => {
-          label_width = label_width.max(text_width(hdc, text_font, label));
-          value_width = value_width.max(text_width(hdc, text_font, value));
-        }
-        Line::Spacer => {}
+      (section, extras)
+    })
+    .collect();
+
+  let lists = sections
+    .iter()
+    .filter(|section| section.style == OverlaySectionStyle::List)
+    .map(|section| {
+      measure_list(
+        hdc,
+        title_font,
+        text_font,
+        Some(&section.title),
+        &section.bindings,
+        physical_keys,
+      )
+    })
+    .collect();
+
+  unsafe { DeleteDC(hdc) }.ok()?;
+
+  Ok((keyboards, lists))
+}
+
+/// Measures a list of `bindings`, labelling each key with its legend on
+/// the keyboard picture if it has one.
+fn measure_list<'a>(
+  hdc: HDC,
+  title_font: HFONT,
+  text_font: HFONT,
+  title: Option<&'a str>,
+  bindings: impl IntoIterator<Item = &'a (Key, String)>,
+  physical_keys: &[PhysicalKey],
+) -> List<'a> {
+  let lines = bindings
+    .into_iter()
+    .map(|(key, action)| {
+      let label = physical_keys
+        .iter()
+        .find(|physical| {
+          !physical.legend.is_empty()
+            && physical_key_matches(physical, *key)
+        })
+        .map_or_else(
+          || key.to_string(),
+          |physical| physical.legend.clone(),
+        );
+
+      ListLine {
+        key: label,
+        action,
+        action_width: text_width(hdc, text_font, action),
       }
+    })
+    .collect::<Vec<_>>();
+
+  List {
+    title,
+    title_width: title
+      .map_or(0, |title| text_width(hdc, title_font, title)),
+    key_width: lines
+      .iter()
+      .map(|line| text_width(hdc, text_font, &line.key))
+      .max()
+      .unwrap_or(0),
+    action_width: lines
+      .iter()
+      .map(|line| line.action_width)
+      .max()
+      .unwrap_or(0),
+    lines,
+  }
+}
+
+/// Splits items of the given widths into rows of at most `max_width`,
+/// separated by `gap`.
+///
+/// Returns the index ranges of each row. An item wider than `max_width`
+/// gets a row of its own.
+fn flow_rows(
+  widths: &[i32],
+  max_width: i32,
+  gap: i32,
+) -> Vec<Range<usize>> {
+  let mut rows = Vec::new();
+  let mut start = 0;
+  let mut row_width = 0;
+
+  for (index, width) in widths.iter().enumerate() {
+    if index > start && row_width + gap + width > max_width {
+      rows.push(start..index);
+      start = index;
     }
 
-    let value_width = value_width
-      .min(max_column_width - label_width - cell_gap)
-      .max(0);
-    let column_width = title_width
-      .min(max_column_width)
-      .max(label_width + cell_gap + value_width);
-    let mut y = padding;
+    row_width = if index == start {
+      *width
+    } else {
+      row_width + gap + width
+    };
+  }
 
-    for line in column {
+  if start < widths.len() {
+    rows.push(start..widths.len());
+  }
+
+  rows
+}
+
+/// Height of a row of lists.
+fn row_height(lists: &[List], metrics: &Metrics) -> i32 {
+  lists
+    .iter()
+    .map(|list| list.height(metrics))
+    .max()
+    .unwrap_or(0)
+}
+
+/// Picks the number of grid columns that gives the largest keyboards
+/// within `max_width` and `max_height`.
+///
+/// `extra_counts` holds the number of extra lines below each section's
+/// keyboard.
+///
+/// Returns the column count and the key size in physical pixels, at most
+/// `max_key_size`.
+fn fit_grid(
+  extra_counts: &[usize],
+  metrics: &Metrics,
+  max_width: i32,
+  max_height: i32,
+  max_key_size: f32,
+) -> (usize, f32) {
+  let mut best = (1, 0.);
+
+  for column_count in 1..=extra_counts.len() {
+    let rows = extra_counts.chunks(column_count).collect::<Vec<_>>();
+
+    let fixed_width =
+      2 * metrics.padding + gaps(column_count) * metrics.section_gap;
+    let fixed_height = 2 * metrics.padding
+      + gaps(rows.len()) * metrics.section_gap
+      + rows
+        .iter()
+        .map(|row| row_fixed_height(row, metrics))
+        .sum::<i32>();
+
+    #[allow(clippy::cast_precision_loss)]
+    let key_size = f32::min(
+      (max_width - fixed_width) as f32
+        / (column_count as f32 * KEYBOARD_WIDTH),
+      (max_height - fixed_height) as f32
+        / (rows.len() as f32 * KEYBOARD_HEIGHT),
+    )
+    .min(max_key_size);
+
+    if key_size > best.1 {
+      best = (column_count, key_size);
+    }
+  }
+
+  best
+}
+
+/// Number of gaps between `count` items.
+fn gaps(count: usize) -> i32 {
+  i32::try_from(count.saturating_sub(1)).unwrap_or(0)
+}
+
+/// Height of a grid row, excluding its keyboards.
+fn row_fixed_height(row_extra_counts: &[usize], metrics: &Metrics) -> i32 {
+  let extra_lines = row_extra_counts.iter().copied().max().unwrap_or(0);
+
+  metrics.title_height
+    + metrics.line_height * i32::try_from(extra_lines).unwrap_or(0)
+}
+
+/// Rounds a size in physical pixels.
+fn to_px(value: f32) -> i32 {
+  // LINT: Values are small positive pixel sizes.
+  #[allow(clippy::cast_possible_truncation)]
+  let px = value.round() as i32;
+  px
+}
+
+/// Items and hints of the overlay, positioned relative to its top-left
+/// corner.
+struct Layout<'a> {
+  items: Vec<DrawItem>,
+  hints: Vec<Hint>,
+  metrics: &'a Metrics,
+}
+
+impl Layout<'_> {
+  /// Positions the keyboards with their titles and extra lines in a grid
+  /// of `column_count` columns, below the top padding.
+  ///
+  /// Returns the width and height of the grid.
+  fn push_keyboards(
+    &mut self,
+    keyboards: &[KeyboardSection],
+    physical_keys: &[PhysicalKey],
+    column_count: usize,
+    key_size: f32,
+  ) -> (i32, i32) {
+    if keyboards.is_empty() {
+      return (0, 0);
+    }
+
+    let metrics = self.metrics;
+    let keyboard_width = to_px(KEYBOARD_WIDTH * key_size);
+    let keyboard_height = to_px(KEYBOARD_HEIGHT * key_size);
+    let mut y = metrics.padding;
+
+    for row in keyboards.chunks(column_count) {
+      let mut x = metrics.padding;
+
+      for (section, extras) in row {
+        self.push_title(&section.title, x, y, keyboard_width);
+
+        let keyboard_top = y + metrics.title_height;
+
+        for physical_key in physical_keys {
+          self.push_key(physical_key, section, key_size, x, keyboard_top);
+        }
+
+        self.push_lines(
+          extras,
+          x,
+          keyboard_top + keyboard_height,
+          keyboard_width,
+        );
+
+        x += keyboard_width + metrics.section_gap;
+      }
+
+      let extra_counts = row
+        .iter()
+        .map(|(_, extras)| extras.lines.len())
+        .collect::<Vec<_>>();
+
+      y += keyboard_height
+        + row_fixed_height(&extra_counts, metrics)
+        + metrics.section_gap;
+    }
+
+    let column_count = column_count.min(keyboards.len());
+    let width = i32::try_from(column_count).unwrap_or(1) * keyboard_width
+      + gaps(column_count) * metrics.section_gap;
+
+    (width, y - metrics.section_gap - metrics.padding)
+  }
+
+  /// Positions the lists in `rows`, starting at `top`.
+  ///
+  /// Returns the width of the widest row.
+  fn push_lists(
+    &mut self,
+    lists: &[List],
+    rows: &[Range<usize>],
+    top: i32,
+  ) -> i32 {
+    let metrics = self.metrics;
+    let mut y = top;
+    let mut max_width = 0;
+
+    for row in rows {
+      let mut x = metrics.padding;
+
+      for list in &lists[row.clone()] {
+        let width = list.width(metrics);
+
+        if let Some(title) = list.title {
+          self.push_title(title, x, y, width);
+        }
+
+        let lines_top = y + list.height(metrics)
+          - metrics.line_height
+            * i32::try_from(list.lines.len()).unwrap_or(0);
+
+        self.push_lines(list, x, lines_top, width);
+        x += width + metrics.section_gap;
+      }
+
+      max_width = max_width.max(x - metrics.section_gap - metrics.padding);
+      y += row_height(&lists[row.clone()], metrics) + metrics.section_gap;
+    }
+
+    max_width
+  }
+
+  /// Adds a section title.
+  fn push_title(&mut self, title: &str, x: i32, y: i32, width: i32) {
+    self.items.push(DrawItem {
+      kind: ItemKind::Title,
+      rect: RECT {
+        left: x,
+        top: y,
+        right: x + width,
+        bottom: y + self.metrics.title_height,
+      },
+      text: title.encode_utf16().collect(),
+    });
+  }
+
+  /// Adds the lines of `list` (without its title), `width` wide, from
+  /// (`x`, `y`).
+  ///
+  /// Truncated actions get a hint with their full text.
+  fn push_lines(&mut self, list: &List, x: i32, y: i32, width: i32) {
+    let metrics = self.metrics;
+    let action_left = x + list.key_width + metrics.cell_gap;
+    let mut y = y;
+
+    for line in &list.lines {
       let line_rect = |left, right| RECT {
         left,
         top: y,
         right,
-        bottom: y + line_height,
+        bottom: y + metrics.line_height,
       };
 
-      match line {
-        Line::Title(title) => items.push(DrawItem {
-          text: title.encode_utf16().collect(),
-          rect: line_rect(x, x + column_width),
-          kind: LineKind::Title,
-        }),
-        Line::Row(label, value) => {
-          items.push(DrawItem {
-            text: label.encode_utf16().collect(),
-            rect: line_rect(x, x + label_width),
-            kind: LineKind::Label,
-          });
-          items.push(DrawItem {
-            text: value.encode_utf16().collect(),
-            rect: line_rect(x + label_width + cell_gap, x + column_width),
-            kind: LineKind::Value,
-          });
-        }
-        Line::Spacer => {}
+      self.items.push(DrawItem {
+        kind: ItemKind::ListKey,
+        rect: line_rect(x, x + list.key_width),
+        text: line.key.encode_utf16().collect(),
+      });
+
+      let action_rect = line_rect(action_left, x + width);
+      let action_text = line.action.encode_utf16().collect::<Vec<_>>();
+
+      if line.action_width > action_rect.right - action_rect.left {
+        self.hints.push(Hint {
+          target: line_rect(x, x + width),
+          text: action_text.clone(),
+        });
       }
 
-      y += line_height;
-    }
+      self.items.push(DrawItem {
+        kind: ItemKind::ListAction,
+        rect: action_rect,
+        text: action_text,
+      });
 
-    x += column_width + column_gap;
-    max_column_lines = max_column_lines.max(column.len());
+      y += metrics.line_height;
+    }
   }
 
-  unsafe { DeleteDC(hdc) }.ok()?;
+  /// Adds the keycap, legend and action of `physical_key` for `section`,
+  /// with the keyboard's top-left corner at (`left`, `top`).
+  ///
+  /// Bound keys get a hint with the full action.
+  fn push_key(
+    &mut self,
+    physical_key: &PhysicalKey,
+    section: &OverlaySection,
+    key_size: f32,
+    left: i32,
+    top: i32,
+  ) {
+    let action = section
+      .bindings
+      .iter()
+      .find(|(key, _)| physical_key_matches(physical_key, *key))
+      .map(|(_, action)| action);
 
-  let width = x - column_gap + padding;
-  let height = 2 * padding
-    + line_height * i32::try_from(max_column_lines).unwrap_or(i32::MAX);
+    let is_held = section
+      .held_keys
+      .iter()
+      .any(|key| physical_key_matches(physical_key, *key));
 
-  Ok((items, width, height))
+    let state = match (is_held, action) {
+      (true, _) => KeyState::Held,
+      (false, Some(_)) => KeyState::Bound,
+      (false, None) => KeyState::Idle,
+    };
+
+    let margin = key_size * KEY_MARGIN;
+
+    // The lower part of a two-row key overlaps the upper part's margin,
+    // so that both parts look like a single key.
+    let top_margin = if physical_key.is_continuation {
+      -margin
+    } else {
+      margin
+    };
+
+    let cap = RECT {
+      left: left + to_px(physical_key.x * key_size + margin),
+      top: top + to_px(physical_key.y * key_size + top_margin),
+      right: left
+        + to_px((physical_key.x + physical_key.width) * key_size - margin),
+      bottom: top + to_px((physical_key.y + 1.) * key_size - margin),
+    };
+
+    self.items.push(DrawItem {
+      kind: ItemKind::KeyCap(state),
+      rect: cap,
+      text: Vec::new(),
+    });
+
+    if physical_key.is_continuation {
+      return;
+    }
+
+    let padding = to_px(key_size * KEY_PADDING);
+    let legend_height = to_px(key_size * LEGEND_FONT_SIZE * 1.3);
+
+    self.items.push(DrawItem {
+      kind: ItemKind::Legend(state),
+      rect: RECT {
+        left: cap.left + padding,
+        top: cap.top + padding,
+        right: cap.right - padding,
+        bottom: cap.top + padding + legend_height,
+      },
+      text: physical_key.legend.encode_utf16().collect(),
+    });
+
+    if let Some(action) = action {
+      let text = action.encode_utf16().collect::<Vec<_>>();
+
+      self.hints.push(Hint {
+        target: cap,
+        text: text.clone(),
+      });
+
+      self.items.push(DrawItem {
+        kind: ItemKind::Action,
+        rect: RECT {
+          left: cap.left + padding,
+          top: cap.top + padding + legend_height,
+          right: cap.right - padding,
+          bottom: cap.bottom - padding,
+        },
+        text,
+      });
+    }
+  }
 }
 
 /// Measures the width of `text` when drawn with `font`.
@@ -445,34 +971,63 @@ fn create_window(rect: &Rect) -> crate::Result<HWND> {
   Ok(hwnd)
 }
 
-/// Draws the overlay's content.
+/// Draws the overlay's content, and the hovered hint on top.
 fn paint(hwnd: HWND, state: &OverlayState) {
   let mut paint_struct = PAINTSTRUCT::default();
   let hdc = unsafe { BeginPaint(hwnd, &raw mut paint_struct) };
+  let brushes = &state.brushes;
 
   unsafe {
-    FillRect(hdc, &raw const paint_struct.rcPaint, state.background);
+    FillRect(hdc, &raw const paint_struct.rcPaint, brushes.background);
     SetBkMode(hdc, TRANSPARENT);
+    // Keycaps and hints are drawn without an outline.
+    SelectObject(hdc, GetStockObject(NULL_PEN));
   }
 
+  let line = DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS;
+  let wrapped =
+    DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX | DT_END_ELLIPSIS;
+
   for item in &state.items {
-    let (font, color) = match item.kind {
-      LineKind::Title => (state.title_font, ACCENT_COLOR),
-      LineKind::Label => (state.text_font, ACCENT_COLOR),
-      LineKind::Value => (state.text_font, TEXT_COLOR),
+    let (font, color, format) = match item.kind {
+      ItemKind::KeyCap(key_state) => {
+        let brush = match key_state {
+          KeyState::Idle => brushes.idle_key,
+          KeyState::Bound => brushes.bound_key,
+          KeyState::Held => brushes.held_key,
+        };
+
+        draw_rounded_rect(hdc, &item.rect, brush);
+        continue;
+      }
+      ItemKind::Title => (state.fonts.title, ACCENT_COLOR, line),
+      ItemKind::Legend(key_state) => {
+        let color = match key_state {
+          KeyState::Idle => DIM_TEXT_COLOR,
+          KeyState::Bound => ACCENT_COLOR,
+          KeyState::Held => BACKGROUND_COLOR,
+        };
+
+        (state.fonts.legend, color, line)
+      }
+      ItemKind::Action => (state.fonts.action, TEXT_COLOR, wrapped),
+      ItemKind::ListKey => (state.fonts.text, ACCENT_COLOR, line),
+      ItemKind::ListAction => (state.fonts.text, TEXT_COLOR, line),
     };
 
-    let mut text = item.text.clone();
-    let mut rect = item.rect;
+    draw_text(hdc, &item.text, item.rect, font, color, format);
+  }
 
-    unsafe {
-      SelectObject(hdc, font);
-      SetTextColor(hdc, color);
-      DrawTextW(
+  if let Some((index, hint_box)) = state.hovered {
+    if let Some(hint) = state.hints.get(index) {
+      draw_rounded_rect(hdc, &hint_box, brushes.hint);
+      draw_text(
         hdc,
-        &mut text,
-        &raw mut rect,
-        DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS,
+        &hint.text,
+        inset(hint_box, state.metrics.hint_padding),
+        state.fonts.text,
+        TEXT_COLOR,
+        DT_WORDBREAK | DT_NOPREFIX,
       );
     }
   }
@@ -480,6 +1035,150 @@ fn paint(hwnd: HWND, state: &OverlayState) {
   unsafe {
     let _ = EndPaint(hwnd, &raw const paint_struct);
   }
+}
+
+/// Fills a rect with rounded corners.
+fn draw_rounded_rect(hdc: HDC, rect: &RECT, brush: HBRUSH) {
+  // Corners are rounded by an eighth of the height, up to 8 pixels.
+  let diameter = ((rect.bottom - rect.top) / 4).min(16);
+
+  unsafe {
+    SelectObject(hdc, brush);
+    // Without an outline, the filled area excludes the right and bottom
+    // edges, hence the extra pixel.
+    let _ = RoundRect(
+      hdc,
+      rect.left,
+      rect.top,
+      rect.right + 1,
+      rect.bottom + 1,
+      diameter,
+      diameter,
+    );
+  }
+}
+
+/// Draws `text` within `rect`.
+fn draw_text(
+  hdc: HDC,
+  text: &[u16],
+  rect: RECT,
+  font: HFONT,
+  color: COLORREF,
+  format: DRAW_TEXT_FORMAT,
+) {
+  let mut text = text.to_vec();
+  let mut rect = rect;
+
+  unsafe {
+    SelectObject(hdc, font);
+    SetTextColor(hdc, color);
+    DrawTextW(hdc, &mut text, &raw mut rect, format);
+  }
+}
+
+/// Shrinks `rect` by `amount` on each side.
+fn inset(rect: RECT, amount: i32) -> RECT {
+  RECT {
+    left: rect.left + amount,
+    top: rect.top + amount,
+    right: rect.right - amount,
+    bottom: rect.bottom - amount,
+  }
+}
+
+/// Whether the point (`x`, `y`) is within `rect`.
+fn contains(rect: &RECT, x: i32, y: i32) -> bool {
+  x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom
+}
+
+/// Box of a hint below its target, or above it if there isn't room
+/// below, kept within `client`.
+fn hint_box(
+  hwnd: HWND,
+  state: &OverlayState,
+  hint: &Hint,
+  client: &RECT,
+) -> RECT {
+  let metrics = &state.metrics;
+  let mut text_rect = RECT {
+    right: metrics.hint_max_width,
+    ..Default::default()
+  };
+
+  unsafe {
+    let hdc = GetDC(hwnd);
+    SelectObject(hdc, state.fonts.text);
+    DrawTextW(
+      hdc,
+      &mut hint.text.clone(),
+      &raw mut text_rect,
+      DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX,
+    );
+    ReleaseDC(hwnd, hdc);
+  }
+
+  let width = text_rect.right + 2 * metrics.hint_padding;
+  let height = text_rect.bottom + 2 * metrics.hint_padding;
+  let gap = metrics.hint_padding / 2;
+
+  let top = if hint.target.bottom + gap + height <= client.bottom {
+    hint.target.bottom + gap
+  } else {
+    hint.target.top - gap - height
+  };
+
+  let left = hint
+    .target
+    .left
+    .min(client.right - gap - width)
+    .max(client.left + gap);
+
+  RECT {
+    left,
+    top,
+    right: left + width,
+    bottom: top + height,
+  }
+}
+
+/// Updates the hovered hint on mouse moves, and repaints the boxes of
+/// the previous and new hint if it changed.
+///
+/// `point` is in client coordinates, or `None` when the mouse left the
+/// window.
+fn update_hover(hwnd: HWND, point: Option<(i32, i32)>) {
+  OVERLAY.with(|overlay| {
+    let mut overlay = overlay.borrow_mut();
+    let Some(state) = overlay.as_mut().filter(|state| state.hwnd == hwnd)
+    else {
+      return;
+    };
+
+    let index = point.and_then(|(x, y)| {
+      state
+        .hints
+        .iter()
+        .position(|hint| contains(&hint.target, x, y))
+    });
+
+    if index == state.hovered.map(|(index, _)| index) {
+      return;
+    }
+
+    let mut client = RECT::default();
+    let _ = unsafe { GetClientRect(hwnd, &raw mut client) };
+
+    let hovered = index.map(|index| {
+      (index, hint_box(hwnd, state, &state.hints[index], &client))
+    });
+
+    for (_, hint_box) in [state.hovered, hovered].into_iter().flatten() {
+      unsafe { InvalidateRect(hwnd, Some(&raw const hint_box), false) };
+    }
+
+    state.hovered = hovered;
+  });
 }
 
 /// Window procedure of the overlay window.
@@ -500,6 +1199,32 @@ unsafe extern "system" fn window_proc(
       });
       LRESULT(0)
     }
+    WM_MOUSEMOVE => {
+      // Request `WM_MOUSELEAVE`, which is sent once per request.
+      let mut track = TRACKMOUSEEVENT {
+        // LINT: Size of the struct fits in a `u32`.
+        #[allow(clippy::cast_possible_truncation)]
+        cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+        dwFlags: TME_LEAVE,
+        hwndTrack: hwnd,
+        dwHoverTime: 0,
+      };
+      let _ = TrackMouseEvent(&raw mut track);
+
+      // Coordinates are signed 16-bit values in the low and high words.
+      #[allow(clippy::cast_possible_truncation)]
+      let point = (
+        i32::from(lparam.0 as i16),
+        i32::from((lparam.0 >> 16) as i16),
+      );
+
+      update_hover(hwnd, Some(point));
+      LRESULT(0)
+    }
+    WM_MOUSELEAVE => {
+      update_hover(hwnd, None);
+      LRESULT(0)
+    }
     WM_LBUTTONDOWN | WM_RBUTTONDOWN => {
       let _ = DestroyWindow(hwnd);
       LRESULT(0)
@@ -512,13 +1237,82 @@ unsafe extern "system" fn window_proc(
       });
 
       if let Some(state) = state {
-        let _ = DeleteObject(state.title_font);
-        let _ = DeleteObject(state.text_font);
-        let _ = DeleteObject(state.background);
+        let Fonts {
+          title,
+          text,
+          legend,
+          action,
+        } = state.fonts;
+        let Brushes {
+          background,
+          idle_key,
+          bound_key,
+          held_key,
+          hint,
+        } = state.brushes;
+
+        for font in [title, text, legend, action] {
+          let _ = DeleteObject(font);
+        }
+
+        for brush in [background, idle_key, bound_key, held_key, hint] {
+          let _ = DeleteObject(brush);
+        }
       }
 
       LRESULT(0)
     }
     _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  const METRICS: Metrics = Metrics {
+    padding: 0,
+    section_gap: 0,
+    title_height: 0,
+    line_height: 10,
+    cell_gap: 0,
+    hint_padding: 0,
+    hint_max_width: 0,
+    list_action_max_width: 0,
+  };
+
+  #[test]
+  fn fits_grid_to_largest_keys() {
+    let width = to_px(KEYBOARD_WIDTH * 100.);
+    let height = to_px(KEYBOARD_HEIGHT * 100.);
+
+    // A single keyboard fills the area, up to the maximum key size.
+    assert_eq!(fit_grid(&[0], &METRICS, width, height, 200.), (1, 100.));
+    assert_eq!(fit_grid(&[0], &METRICS, width, height, 50.), (1, 50.));
+
+    // Two keyboards in a wide area are placed side by side.
+    assert_eq!(
+      fit_grid(&[0, 0], &METRICS, 2 * width, height, 200.),
+      (2, 100.)
+    );
+
+    // Extra lines below a keyboard shrink its keys.
+    let (columns, key_size) =
+      fit_grid(&[0, 2], &METRICS, 2 * width, height, 200.);
+    assert_eq!(columns, 2);
+    assert!(key_size < 100.);
+  }
+
+  #[test]
+  fn flows_items_into_rows() {
+    assert_eq!(flow_rows(&[], 100, 10), Vec::<Range<usize>>::new());
+    assert_eq!(flow_rows(&[40, 40, 40], 100, 10), vec![0..2, 2..3]);
+    assert_eq!(flow_rows(&[40, 50], 100, 10), vec![0..2]);
+
+    // Items wider than the row get a row of their own.
+    assert_eq!(
+      flow_rows(&[150, 40, 150], 100, 10),
+      vec![0..1, 1..2, 2..3]
+    );
   }
 }

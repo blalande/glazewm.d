@@ -204,6 +204,22 @@ pub enum Key {
 }
 
 impl Key {
+  /// Parses a key as written in a keybinding (e.g. `alt`, `a`, `à`).
+  ///
+  /// Key names are tried first, then the key is looked up as a literal
+  /// on the current keyboard layout (see `Key::try_from_literal`).
+  ///
+  /// # Errors
+  ///
+  /// Returns `KeyParseError::UnknownKey` if the key is neither a key name
+  /// nor found on the current keyboard layout.
+  pub fn from_binding_str(key_str: &str) -> Result<Self, KeyParseError> {
+    key_str
+      .trim()
+      .parse()
+      .or_else(|_| Key::try_from_literal(key_str))
+  }
+
   /// Attempts to parse a key from a literal string (e.g. `a`, `;`, `à`).
   ///
   /// # Platform-specific

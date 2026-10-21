@@ -100,6 +100,10 @@ pub struct GeneralConfig {
 
   /// Layout used by workspaces without a `layout` override.
   pub default_layout: Layout,
+
+  /// Combinations of held keys with at most this many keybindings are
+  /// listed instead of shown on a keyboard by `wm-show-keybindings`.
+  pub keybindings_overlay_list_threshold: usize,
 }
 
 impl Default for GeneralConfig {
@@ -123,6 +127,7 @@ impl Default for GeneralConfig {
       },
       show_all_in_taskbar: false,
       default_layout: Layout::default(),
+      keybindings_overlay_list_threshold: 2,
     }
   }
 }
@@ -170,10 +175,6 @@ pub struct KeybindingConfig {
   /// Description shown instead of the commands by
   /// `wm-show-keybindings`.
   pub comment: Option<String>,
-
-  /// Group that the keybinding is listed under by
-  /// `wm-show-keybindings`.
-  pub group: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -453,9 +454,7 @@ where
     .map(|keybinding_str| {
       let keys: Vec<Key> = keybinding_str
         .split('+')
-        .map(|key| {
-          key.trim().parse().or_else(|_| Key::try_from_literal(key))
-        })
+        .map(Key::from_binding_str)
         .collect::<Result<Vec<Key>, _>>()
         .map_err(serde::de::Error::custom)?;
 
