@@ -168,12 +168,6 @@ pub enum InvokeCommand {
   /// so that each takes the other's place. Focus follows the focused
   /// workspace.
   SwapWorkspace(InvokeSwapWorkspaceCommand),
-  /// Brings a workspace to the focused monitor and focuses it, moving it
-  /// from another monitor or activating it as needed.
-  SummonWorkspace {
-    #[clap(long)]
-    workspace: String,
-  },
   Position(InvokePositionCommand),
   Resize(InvokeResizeCommand),
   UpdateWorkspaceConfig {

@@ -363,8 +363,6 @@ binding_modes:
 
 `swap-workspace` 将聚焦的工作区与另一个显示器上的工作区交换，使两者互换位置。另一个工作区可以通过 `--workspace <name>` 指定，或通过 `--next-monitor`、`--prev-monitor` 指定为相邻显示器上显示的工作区。焦点会跟随原本聚焦的工作区。
 
-`summon-workspace --workspace <name>` 将工作区移到聚焦的显示器上并聚焦它。若该工作区在另一个显示器上处于活动状态，则将其移过来；否则在聚焦的显示器上激活它。没有剩余工作区的显示器会获得一个新的工作区。
-
 `wm-show-keybindings`（默认配置中为 `alt+shift+k`）会在聚焦显示器中央的浮层中列出配置文件中的快捷键，包括绑定模式中的快捷键，分两列显示。若快捷键设置了可选的 `comment`，则显示该注释而非其命令；快捷键按可选的 `group` 分组显示（未设置时归入 "Generic Keybinding"）。在绑定模式中，仅当其快捷键使用多个分组时才显示分组。按 Esc 或点击浮层即可关闭。该命令仅在 Windows 上可用。
 
 平铺方向命令（`toggle-tiling-direction` 和 `set-tiling-direction`）以及 `tiling-direction` 查询已被移除。使用它们的快捷键需要替换，例如替换为 `cycle-layout`。

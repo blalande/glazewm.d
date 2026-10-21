@@ -350,27 +350,6 @@ keybindings:
   - commands: ['swap-workspace --next-monitor']
     bindings: ['alt+shift+x']
 
-  # Bring a workspace to the focused monitor, moving it from another
-  # monitor if needed.
-  - commands: ['summon-workspace --workspace 1']
-    bindings: ['alt+ctrl+1']
-  - commands: ['summon-workspace --workspace 2']
-    bindings: ['alt+ctrl+2']
-  - commands: ['summon-workspace --workspace 3']
-    bindings: ['alt+ctrl+3']
-  - commands: ['summon-workspace --workspace 4']
-    bindings: ['alt+ctrl+4']
-  - commands: ['summon-workspace --workspace 5']
-    bindings: ['alt+ctrl+5']
-  - commands: ['summon-workspace --workspace 6']
-    bindings: ['alt+ctrl+6']
-  - commands: ['summon-workspace --workspace 7']
-    bindings: ['alt+ctrl+7']
-  - commands: ['summon-workspace --workspace 8']
-    bindings: ['alt+ctrl+8']
-  - commands: ['summon-workspace --workspace 9']
-    bindings: ['alt+ctrl+9']
-
   # Move focused window to a workspace defined in `workspaces` config.
   - commands: ['move --workspace 1', 'focus --workspace 1']
     bindings: ['alt+shift+1']
