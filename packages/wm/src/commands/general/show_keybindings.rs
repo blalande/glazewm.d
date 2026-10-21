@@ -36,13 +36,18 @@ struct RawBindingMode {
   keybindings: Vec<RawKeybinding>,
 }
 
-/// Shows the keybindings of the user config in an overlay centered on
-/// the focused monitor.
+/// Shows the currently active keybindings in an overlay centered on the
+/// focused monitor.
+///
+/// Shows the keybindings of the active binding mode if one is enabled,
+/// and the main keybindings otherwise.
 pub fn show_keybindings(
   state: &WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
-  let sections = keybinding_sections(&config.value_str)?;
+  let active_mode =
+    state.binding_modes.first().map(|mode| mode.name.as_str());
+  let sections = keybinding_sections(&config.value_str, active_mode)?;
 
   let display = state
     .focused_container()
@@ -59,8 +64,11 @@ pub fn show_keybindings(
   Ok(())
 }
 
-/// Builds one overlay section per group of the main keybindings,
-/// followed by the sections of each binding mode.
+/// Builds the overlay sections of the active keybindings.
+///
+/// Without an active binding mode, returns one section per group of the
+/// main keybindings. With an active binding mode, returns only the
+/// sections of that mode, since its keybindings replace the main ones.
 ///
 /// A binding mode gets one section per group if its keybindings span
 /// multiple groups, and a single section otherwise. Keybindings without
@@ -71,31 +79,44 @@ pub fn show_keybindings(
 /// displayed exactly as written.
 fn keybinding_sections(
   config_str: &str,
+  active_mode: Option<&str>,
 ) -> anyhow::Result<Vec<OverlaySection>> {
   let config: RawKeybindingsConfig = serde_yaml::from_str(config_str)?;
 
-  let main_sections = group_keybindings(config.keybindings)
+  let Some(active_mode) = active_mode else {
+    return Ok(
+      group_keybindings(config.keybindings)
+        .into_iter()
+        .map(|(group, rows)| OverlaySection { title: group, rows })
+        .collect(),
+    );
+  };
+
+  let mode = config
+    .binding_modes
     .into_iter()
-    .map(|(group, rows)| OverlaySection { title: group, rows });
+    .find(|mode| mode.name == active_mode)
+    .with_context(|| format!("No binding mode named '{active_mode}'."))?;
 
-  let mode_sections = config.binding_modes.into_iter().flat_map(|mode| {
-    let mode_title =
-      format!("Binding mode: {}", mode.display_name.unwrap_or(mode.name));
+  let mode_title =
+    format!("Binding mode: {}", mode.display_name.unwrap_or(mode.name));
 
-    let groups = group_keybindings(mode.keybindings);
-    let has_multiple_groups = groups.len() > 1;
+  let groups = group_keybindings(mode.keybindings);
+  let has_multiple_groups = groups.len() > 1;
 
-    groups.into_iter().map(move |(group, rows)| OverlaySection {
-      title: if has_multiple_groups {
-        format!("{mode_title} › {group}")
-      } else {
-        mode_title.clone()
-      },
-      rows,
-    })
-  });
-
-  Ok(main_sections.chain(mode_sections).collect())
+  Ok(
+    groups
+      .into_iter()
+      .map(|(group, rows)| OverlaySection {
+        title: if has_multiple_groups {
+          format!("{mode_title} › {group}")
+        } else {
+          mode_title.clone()
+        },
+        rows,
+      })
+      .collect(),
+  )
 }
 
 /// Groups keybindings by their `group` into overlay rows.
@@ -144,9 +165,7 @@ mod tests {
     }
   }
 
-  #[test]
-  fn groups_keybindings_into_sections() {
-    let config_str = r"
+  const CONFIG_STR: &str = r"
 general:
   focus_follows_cursor: false
 keybindings:
@@ -179,8 +198,10 @@ binding_modes:
   - name: empty
 ";
 
+  #[test]
+  fn groups_main_keybindings_without_active_mode() {
     let sections =
-      keybinding_sections(config_str).expect("Valid config string.");
+      keybinding_sections(CONFIG_STR, None).expect("Valid config string.");
 
     assert_eq!(
       sections,
@@ -196,6 +217,18 @@ binding_modes:
           DEFAULT_GROUP,
           &[("alt+r", "Resize mode"), ("alt+shift+w", "wm-redraw")]
         ),
+      ]
+    );
+  }
+
+  #[test]
+  fn shows_only_active_mode_keybindings() {
+    let sections = keybinding_sections(CONFIG_STR, Some("resize"))
+      .expect("Valid config string.");
+
+    assert_eq!(
+      sections,
+      vec![
         section(
           "Binding mode: Resize › Size",
           &[("h", "resize --width -2%")]
@@ -204,15 +237,31 @@ binding_modes:
           &format!("Binding mode: Resize › {DEFAULT_GROUP}"),
           &[("escape", "wm-disable-binding-mode --name resize")]
         ),
-        section("Binding mode: move", &[("h", "move --direction left")]),
       ]
+    );
+
+    let sections = keybinding_sections(CONFIG_STR, Some("move"))
+      .expect("Valid config string.");
+
+    assert_eq!(
+      sections,
+      vec![section(
+        "Binding mode: move",
+        &[("h", "move --direction left")]
+      )]
     );
   }
 
   #[test]
+  fn fails_on_unknown_active_mode() {
+    assert!(keybinding_sections(CONFIG_STR, Some("unknown")).is_err());
+  }
+
+  #[test]
   fn builds_sections_from_sample_config() {
-    let sections = keybinding_sections(&UserConfig::mock().value_str)
-      .expect("Valid sample config.");
+    let sections =
+      keybinding_sections(&UserConfig::mock().value_str, None)
+        .expect("Valid sample config.");
 
     assert!(sections.iter().all(|section| !section.rows.is_empty()));
     assert_eq!(sections[0].title, DEFAULT_GROUP);
