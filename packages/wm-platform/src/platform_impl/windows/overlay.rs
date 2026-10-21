@@ -18,24 +18,16 @@ use windows::{
         PAINTSTRUCT, TRANSPARENT,
       },
     },
-    UI::{
-      Input::KeyboardAndMouse::{
-        RegisterHotKey, UnregisterHotKey, MOD_NOREPEAT, VK_ESCAPE,
-      },
-      WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW,
-        ShowWindow, SW_SHOWNOACTIVATE, WM_DESTROY, WM_HOTKEY,
-        WM_LBUTTONDOWN, WM_PAINT, WM_RBUTTONDOWN, WNDCLASSW,
-        WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
-      },
+    UI::WindowsAndMessaging::{
+      CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW,
+      ShowWindow, SW_SHOWNOACTIVATE, WM_DESTROY, WM_LBUTTONDOWN, WM_PAINT,
+      WM_RBUTTONDOWN, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+      WS_EX_TOPMOST, WS_POPUP,
     },
   },
 };
 
 use crate::{OverlaySection, Rect};
-
-/// ID of the escape hotkey registered while the overlay is shown.
-const HOTKEY_ID: i32 = 1;
 
 const BACKGROUND_COLOR: COLORREF = COLORREF(0x002E_1E1E);
 const TEXT_COLOR: COLORREF = COLORREF(0x00F4_D6CD);
@@ -94,8 +86,8 @@ enum Line<'a> {
 /// Shows an overlay listing `sections`, centered within `working_area`.
 ///
 /// Replaces the overlay if one is already shown. The overlay is topmost,
-/// never takes focus, and closes when escape is pressed or when it is
-/// clicked.
+/// never takes focus, and closes when escape is pressed (see
+/// `KeyboardHook`) or when it is clicked.
 ///
 /// Must be called on the event loop thread.
 pub(crate) fn show_overlay(
@@ -154,16 +146,6 @@ pub(crate) fn show_overlay(
     });
   });
 
-  // Escape is captured via a hotkey, since the overlay never has focus.
-  if let Err(err) = unsafe {
-    RegisterHotKey(hwnd, HOTKEY_ID, MOD_NOREPEAT, u32::from(VK_ESCAPE.0))
-  } {
-    tracing::warn!(
-      "Failed to register escape hotkey for overlay. Click it to close \
-       instead: {err}"
-    );
-  }
-
   unsafe {
     // Rounded corners are a cosmetic Windows 11 feature, so failure is
     // ignored.
@@ -185,17 +167,25 @@ pub(crate) fn show_overlay(
 }
 
 /// Closes the overlay if one is shown.
-fn close_overlay() {
+///
+/// Returns whether an overlay was shown.
+///
+/// Must be called on the event loop thread.
+pub(crate) fn close_overlay() -> bool {
   let hwnd = OVERLAY
     .with(|overlay| overlay.borrow().as_ref().map(|state| state.hwnd));
 
   // State is released in `WM_DESTROY`, so the borrow must be dropped
   // before destroying the window.
-  if let Some(hwnd) = hwnd {
-    if let Err(err) = unsafe { DestroyWindow(hwnd) } {
-      tracing::warn!("Failed to destroy overlay window: {err}");
-    }
+  let Some(hwnd) = hwnd else {
+    return false;
+  };
+
+  if let Err(err) = unsafe { DestroyWindow(hwnd) } {
+    tracing::warn!("Failed to destroy overlay window: {err}");
   }
+
+  true
 }
 
 /// Distributes the sections' lines across `COLUMN_COUNT` columns of
@@ -510,17 +500,11 @@ unsafe extern "system" fn window_proc(
       });
       LRESULT(0)
     }
-    WM_HOTKEY if wparam.0 == HOTKEY_ID as usize => {
-      let _ = DestroyWindow(hwnd);
-      LRESULT(0)
-    }
     WM_LBUTTONDOWN | WM_RBUTTONDOWN => {
       let _ = DestroyWindow(hwnd);
       LRESULT(0)
     }
     WM_DESTROY => {
-      let _ = UnregisterHotKey(hwnd, HOTKEY_ID);
-
       let state = OVERLAY.with(|overlay| {
         let mut overlay = overlay.borrow_mut();
         let is_current = overlay.as_ref().is_some_and(|s| s.hwnd == hwnd);

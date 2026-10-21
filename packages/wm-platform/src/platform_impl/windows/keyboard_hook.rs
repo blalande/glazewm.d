@@ -171,6 +171,14 @@ impl KeyboardHook {
       return unsafe { CallNextHookEx(None, code, wparam, lparam) };
     };
 
+    // Escape closes the overlay before keybindings are matched, so that
+    // it doesn't also trigger an escape keybinding (e.g. one exiting a
+    // binding mode). The hook runs on the event loop thread, which owns
+    // the overlay.
+    if key == Key::Escape && is_keypress && super::close_overlay() {
+      return LRESULT(1);
+    }
+
     let key_event = KeyEvent {
       key,
       key_code,
