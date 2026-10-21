@@ -49,9 +49,9 @@ general:
   # - 'false': Only show windows from the currently shown workspaces.
   show_all_in_taskbar: false
 
-  # `wm-show-keybindings` shows a keyboard per combination of modifiers.
-  # Combinations with at most this many keybindings are listed instead.
-  keybindings_overlay_list_threshold: 2
+  # Opacity of the `wm-show-keybindings` overlay. Can be something like
+  # '70%' or '0.7'.
+  keybindings_overlay_opacity: '70%'
 
 gaps:
   # Whether to scale the gaps with the DPI of the monitor.

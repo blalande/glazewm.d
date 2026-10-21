@@ -179,6 +179,10 @@ impl KeyboardHook {
       return LRESULT(1);
     }
 
+    // Modifiers switch the keyboard shown by the overlay, and are still
+    // passed on to keybindings and other apps.
+    super::update_held_modifiers(key_code, is_keypress);
+
     let key_event = KeyEvent {
       key,
       key_code,

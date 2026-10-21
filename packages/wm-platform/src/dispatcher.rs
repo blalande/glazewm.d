@@ -52,7 +52,7 @@ use crate::{
   platform_impl, Display, DisplayDevice, MouseButton, NativeWindow, Point,
 };
 #[cfg(target_os = "windows")]
-use crate::{OverlaySection, Rect};
+use crate::{OpacityValue, OverlaySection, Rect};
 
 /// Type alias for a closure to be executed by the event loop.
 pub type DispatchFn = dyn FnOnce() + Send + 'static;
@@ -181,8 +181,11 @@ pub trait DispatcherExtWindows {
     hide_window: bool,
   ) -> crate::Result<()>;
 
-  /// Shows an overlay listing `sections`, centered within `working_area`
-  /// and scaled by `scale_factor`.
+  /// Shows an overlay with the keybindings of `sections`, centered within
+  /// `working_area`, scaled by `scale_factor` and drawn with `opacity`.
+  ///
+  /// A single keyboard is shown, that of the section matching the held
+  /// modifiers, and is updated as they are pressed and released.
   ///
   /// The overlay is shown on top of all windows without taking focus,
   /// and closes when escape is pressed or when it is clicked. Replaces
@@ -196,6 +199,7 @@ pub trait DispatcherExtWindows {
     sections: Vec<OverlaySection>,
     working_area: Rect,
     scale_factor: f32,
+    opacity: OpacityValue,
   ) -> crate::Result<()>;
 }
 
@@ -206,9 +210,15 @@ impl DispatcherExtWindows for Dispatcher {
     sections: Vec<OverlaySection>,
     working_area: Rect,
     scale_factor: f32,
+    opacity: OpacityValue,
   ) -> crate::Result<()> {
     self.dispatch_sync(move || {
-      platform_impl::show_overlay(&sections, &working_area, scale_factor)
+      platform_impl::show_overlay(
+        &sections,
+        &working_area,
+        scale_factor,
+        &opacity,
+      )
     })?
   }
 

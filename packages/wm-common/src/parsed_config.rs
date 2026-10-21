@@ -101,9 +101,8 @@ pub struct GeneralConfig {
   /// Layout used by workspaces without a `layout` override.
   pub default_layout: Layout,
 
-  /// Combinations of held keys with at most this many keybindings are
-  /// listed instead of shown on a keyboard by `wm-show-keybindings`.
-  pub keybindings_overlay_list_threshold: usize,
+  /// Opacity of the `wm-show-keybindings` overlay.
+  pub keybindings_overlay_opacity: OpacityValue,
 }
 
 impl Default for GeneralConfig {
@@ -127,7 +126,7 @@ impl Default for GeneralConfig {
       },
       show_all_in_taskbar: false,
       default_layout: Layout::default(),
-      keybindings_overlay_list_threshold: 2,
+      keybindings_overlay_opacity: OpacityValue(0.7),
     }
   }
 }

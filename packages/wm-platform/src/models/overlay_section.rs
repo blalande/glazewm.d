@@ -12,17 +12,4 @@ pub struct OverlaySection {
 
   /// Trigger keys with the label shown on them.
   pub bindings: Vec<(Key, String)>,
-
-  /// How the keybindings are displayed.
-  pub style: OverlaySectionStyle,
-}
-
-/// How the keybindings of an `OverlaySection` are displayed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OverlaySectionStyle {
-  /// Picture of a keyboard, with labels on the bound keys.
-  Keyboard,
-
-  /// List of trigger keys and their labels.
-  List,
 }

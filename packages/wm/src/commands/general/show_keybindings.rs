@@ -1,8 +1,6 @@
 use anyhow::Context;
 use serde::Deserialize;
-use wm_platform::{
-  DispatcherExtWindows, Key, OverlaySection, OverlaySectionStyle,
-};
+use wm_platform::{DispatcherExtWindows, Key, OverlaySection};
 
 use crate::{
   traits::CommonGetters, user_config::UserConfig, wm_state::WmState,
@@ -57,7 +55,8 @@ const MODIFIER_ORDER: &[Key] = &[
 const NO_MODIFIER_TITLE: &str = "No modifier";
 
 /// Shows the currently active keybindings in an overlay centered on the
-/// focused monitor, as a keyboard picture per combination of held keys.
+/// focused monitor, as a keyboard picture of the keybindings of the held
+/// modifiers.
 ///
 /// Shows the keybindings of the active binding mode if one is enabled,
 /// and the main keybindings otherwise.
@@ -67,11 +66,7 @@ pub fn show_keybindings(
 ) -> anyhow::Result<()> {
   let active_mode =
     state.binding_modes.first().map(|mode| mode.name.as_str());
-  let sections = keybinding_sections(
-    &config.value_str,
-    active_mode,
-    config.value.general.keybindings_overlay_list_threshold,
-  )?;
+  let sections = keybinding_sections(&config.value_str, active_mode)?;
 
   let display = state
     .focused_container()
@@ -83,6 +78,7 @@ pub fn show_keybindings(
     sections,
     display.working_area()?,
     display.scale_factor()?,
+    config.value.general.keybindings_overlay_opacity.clone(),
   )?;
 
   Ok(())
@@ -95,9 +91,7 @@ pub fn show_keybindings(
 /// that mode, since its keybindings replace the main ones.
 ///
 /// Returns one section per combination of held keys (i.e. all keys of a
-/// binding but its last), ordered by first occurrence. Sections with at
-/// most `list_threshold` keybindings are listed instead of shown on a
-/// keyboard.
+/// binding but its last), ordered by first occurrence.
 ///
 /// A keybinding's `comment` is displayed if set, otherwise its commands.
 /// Commands are taken from the unparsed config string, so that they are
@@ -105,12 +99,11 @@ pub fn show_keybindings(
 fn keybinding_sections(
   config_str: &str,
   active_mode: Option<&str>,
-  list_threshold: usize,
 ) -> anyhow::Result<Vec<OverlaySection>> {
   let config: RawKeybindingsConfig = serde_yaml::from_str(config_str)?;
 
-  let mut sections = match active_mode {
-    None => group_by_held_keys(config.keybindings, None)?,
+  match active_mode {
+    None => group_by_held_keys(config.keybindings, None),
     Some(active_mode) => {
       let mode = config
         .binding_modes
@@ -125,17 +118,9 @@ fn keybinding_sections(
         mode.display_name.unwrap_or(mode.name)
       );
 
-      group_by_held_keys(mode.keybindings, Some(&mode_title))?
-    }
-  };
-
-  for section in &mut sections {
-    if section.bindings.len() <= list_threshold {
-      section.style = OverlaySectionStyle::List;
+      group_by_held_keys(mode.keybindings, Some(&mode_title))
     }
   }
-
-  Ok(sections)
 }
 
 /// Groups keybindings into one section per combination of held keys.
@@ -180,7 +165,6 @@ fn group_by_held_keys(
           title: section_title(&keys, title_prefix),
           held_keys: keys,
           bindings: Vec::new(),
-          style: OverlaySectionStyle::Keyboard,
         });
         sections.len() - 1
       };
@@ -232,7 +216,6 @@ mod tests {
     title: &str,
     held_keys: &[Key],
     bindings: &[(Key, &str)],
-    style: OverlaySectionStyle,
   ) -> OverlaySection {
     OverlaySection {
       title: title.to_string(),
@@ -241,7 +224,6 @@ mod tests {
         .iter()
         .map(|(key, label)| (*key, label.to_string()))
         .collect(),
-      style,
     }
   }
 
@@ -271,8 +253,8 @@ binding_modes:
 
   #[test]
   fn groups_main_keybindings_by_held_keys() {
-    let sections = keybinding_sections(CONFIG_STR, None, 2)
-      .expect("Valid config string.");
+    let sections =
+      keybinding_sections(CONFIG_STR, None).expect("Valid config string.");
 
     assert_eq!(
       sections,
@@ -284,14 +266,12 @@ binding_modes:
             (Key::H, "focus --direction left"),
             (Key::Left, "focus --direction left"),
             (Key::R, "Resize mode / wm-redraw"),
-          ],
-          OverlaySectionStyle::Keyboard
+          ]
         ),
         section(
           "Alt + Shift",
           &[Key::Alt, Key::Shift],
-          &[(Key::H, "move --direction left"), (Key::W, "wm-redraw")],
-          OverlaySectionStyle::List
+          &[(Key::H, "move --direction left"), (Key::W, "wm-redraw")]
         ),
       ]
     );
@@ -299,7 +279,7 @@ binding_modes:
 
   #[test]
   fn shows_only_active_mode_keybindings() {
-    let sections = keybinding_sections(CONFIG_STR, Some("resize"), 1)
+    let sections = keybinding_sections(CONFIG_STR, Some("resize"))
       .expect("Valid config string.");
 
     assert_eq!(
@@ -311,19 +291,17 @@ binding_modes:
           &[
             (Key::H, "resize --width -2%"),
             (Key::Escape, "wm-disable-binding-mode --name resize"),
-          ],
-          OverlaySectionStyle::Keyboard
+          ]
         ),
         section(
           "Binding mode: Resize › Ctrl",
           &[Key::Ctrl],
-          &[(Key::C, "wm-disable-binding-mode --name resize")],
-          OverlaySectionStyle::List
+          &[(Key::C, "wm-disable-binding-mode --name resize")]
         ),
       ]
     );
 
-    let sections = keybinding_sections(CONFIG_STR, Some("empty"), 2)
+    let sections = keybinding_sections(CONFIG_STR, Some("empty"))
       .expect("Valid config string.");
 
     assert_eq!(sections, Vec::new());
@@ -331,13 +309,13 @@ binding_modes:
 
   #[test]
   fn fails_on_unknown_active_mode() {
-    assert!(keybinding_sections(CONFIG_STR, Some("unknown"), 2).is_err());
+    assert!(keybinding_sections(CONFIG_STR, Some("unknown")).is_err());
   }
 
   #[test]
   fn builds_sections_from_sample_config() {
     let sections =
-      keybinding_sections(&UserConfig::mock().value_str, None, 2)
+      keybinding_sections(&UserConfig::mock().value_str, None)
         .expect("Valid sample config.");
 
     assert!(sections.iter().all(|section| !section.bindings.is_empty()));

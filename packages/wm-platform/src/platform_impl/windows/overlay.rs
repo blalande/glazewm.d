@@ -1,4 +1,4 @@
-use std::{cell::RefCell, ops::Range};
+use std::cell::RefCell;
 
 use windows::{
   core::{w, PCWSTR},
@@ -22,12 +22,13 @@ use windows::{
     },
     UI::{
       Input::KeyboardAndMouse::{
-        TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+        GetAsyncKeyState, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
       },
       WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect,
-        RegisterClassW, ShowWindow, SW_SHOWNOACTIVATE, WM_DESTROY,
-        WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONDOWN, WNDCLASSW,
+        RegisterClassW, SetLayeredWindowAttributes, ShowWindow, LWA_ALPHA,
+        SW_SHOWNOACTIVATE, WM_DESTROY, WM_LBUTTONDOWN, WM_MOUSEMOVE,
+        WM_PAINT, WM_RBUTTONDOWN, WNDCLASSW, WS_EX_LAYERED,
         WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
       },
     },
@@ -38,8 +39,8 @@ use super::keyboard_layout::{
   physical_keys, PhysicalKey, KEYBOARD_HEIGHT, KEYBOARD_WIDTH,
 };
 use crate::{
-  keybinding_listener::MODIFIER_GROUPS, Key, OverlaySection,
-  OverlaySectionStyle, Rect,
+  keybinding_listener::MODIFIER_GROUPS, Key, KeyCode, OpacityValue,
+  OverlaySection, Rect,
 };
 
 const BACKGROUND_COLOR: COLORREF = COLORREF(0x002E_1E1E);
@@ -48,6 +49,7 @@ const ACCENT_COLOR: COLORREF = COLORREF(0x00FA_B489);
 const DIM_TEXT_COLOR: COLORREF = COLORREF(0x0086_706C);
 const IDLE_KEY_COLOR: COLORREF = COLORREF(0x0044_3231);
 const BOUND_KEY_COLOR: COLORREF = COLORREF(0x005A_4745);
+const AVAILABLE_KEY_COLOR: COLORREF = COLORREF(0x0078_5A45);
 const HINT_COLOR: COLORREF = COLORREF(0x0070_5B58);
 
 /// Font size, padding and gaps in logical pixels (i.e. at 100% scale).
@@ -55,18 +57,13 @@ const FONT_SIZE: f32 = 15.;
 const LINE_HEIGHT: f32 = 24.;
 const TITLE_HEIGHT: f32 = 32.;
 const PADDING: f32 = 24.;
-const SECTION_GAP: f32 = 32.;
 const CELL_GAP: f32 = 16.;
 const HINT_PADDING: f32 = 8.;
 const HINT_MAX_WIDTH: f32 = 360.;
 
-/// Widest action of a list in logical pixels, beyond which it is
-/// truncated (and shown in full on hover).
-const LIST_ACTION_MAX_WIDTH: f32 = 360.;
-
-/// Largest key size in logical pixels, used when the keyboards would
-/// otherwise grow larger.
-const MAX_KEY_SIZE: f32 = 72.;
+/// Key size in logical pixels whose legend and action fonts are kept for
+/// larger keys.
+const FONT_KEY_SIZE: f32 = 72.;
 
 /// Sizes relative to the key size.
 const KEY_MARGIN: f32 = 0.05;
@@ -79,8 +76,24 @@ const ACTION_FONT_SIZE: f32 = 0.18;
 /// features).
 const WM_MOUSELEAVE: u32 = 0x02A3;
 
-/// Percentage of the working area that the overlay may cover at most.
-const MAX_AREA_PERCENT: i32 = 95;
+/// Percentage of the working area's width or height that the overlay
+/// covers, whichever is reached first.
+const AREA_PERCENT: i32 = 70;
+
+/// Modifier keys whose state selects the shown section.
+const MODIFIER_KEYS: [Key; 8] = [
+  Key::LShift,
+  Key::RShift,
+  Key::LCtrl,
+  Key::RCtrl,
+  Key::LAlt,
+  Key::RAlt,
+  Key::LWin,
+  Key::RWin,
+];
+
+/// Title shown when no section matches the held modifiers.
+const NO_KEYBINDINGS_TITLE: &str = "No keybindings";
 
 thread_local! {
   /// State of the currently shown overlay, if any.
@@ -95,6 +108,15 @@ struct OverlayState {
   fonts: Fonts,
   brushes: Brushes,
   metrics: Metrics,
+  sections: Vec<OverlaySection>,
+  physical_keys: Vec<PhysicalKey>,
+
+  /// Size of a letter key in physical pixels.
+  key_size: f32,
+
+  /// Modifier keys held down, in the order of `MODIFIER_KEYS`.
+  held: Vec<Key>,
+
   items: Vec<DrawItem>,
   hints: Vec<Hint>,
 
@@ -113,6 +135,7 @@ struct Brushes {
   background: HBRUSH,
   idle_key: HBRUSH,
   bound_key: HBRUSH,
+  available_key: HBRUSH,
   held_key: HBRUSH,
   hint: HBRUSH,
 }
@@ -139,6 +162,10 @@ enum ItemKind {
 enum KeyState {
   Idle,
   Bound,
+
+  /// Modifier that leads to more keybindings when also held.
+  Available,
+
   Held,
 }
 
@@ -151,27 +178,20 @@ struct Hint {
 /// Overlay sizes in physical pixels.
 struct Metrics {
   padding: i32,
-  section_gap: i32,
   title_height: i32,
   line_height: i32,
   cell_gap: i32,
   hint_padding: i32,
   hint_max_width: i32,
-  list_action_max_width: i32,
 }
 
 /// Keybindings listed as a column of trigger keys and a column of
 /// actions, measured with the overlay's fonts.
 struct List<'a> {
-  title: Option<&'a str>,
   lines: Vec<ListLine<'a>>,
-  title_width: i32,
 
   /// Width of the widest key label.
   key_width: i32,
-
-  /// Width of the widest action.
-  action_width: i32,
 }
 
 /// A trigger key and its action in a `List`.
@@ -181,37 +201,31 @@ struct ListLine<'a> {
   action_width: i32,
 }
 
-impl List<'_> {
-  /// Width of the list, with actions truncated to
-  /// `list_action_max_width`.
-  fn width(&self, metrics: &Metrics) -> i32 {
-    let action_width =
-      self.action_width.min(metrics.list_action_max_width);
+/// What the keyboard picture shows.
+struct KeyboardView<'a> {
+  title: &'a str,
 
-    self
-      .title_width
-      .max(self.key_width + metrics.cell_gap + action_width)
-  }
+  /// Keys highlighted as held.
+  held_keys: &'a [Key],
 
-  /// Height of the list, including its title.
-  fn height(&self, metrics: &Metrics) -> i32 {
-    let title_height = if self.title.is_some() {
-      metrics.title_height
-    } else {
-      0
-    };
+  bindings: &'a [(Key, String)],
 
-    title_height
-      + metrics.line_height * i32::try_from(self.lines.len()).unwrap_or(0)
-  }
+  /// Modifier keys highlighted as leading to more keybindings.
+  available_keys: &'a [Key],
 }
 
 /// Shows an overlay with the keybindings of `sections`, centered within
 /// `working_area`.
 ///
-/// Sections are shown as keyboard pictures in a grid, followed by those
-/// shown as lists. Hovering a bound key or a truncated action shows its
-/// full text.
+/// A single keyboard picture is shown: that of the section whose held
+/// keys are the currently held modifiers, or the section with the fewest
+/// held keys when no modifier is held. It is updated as modifiers are
+/// pressed and released (see `update_held_modifiers`), and modifiers
+/// that lead to more keybindings are highlighted. Hovering a bound key or
+/// a truncated action shows its full text.
+///
+/// The keyboard fills `AREA_PERCENT` of `working_area`, and the overlay
+/// is drawn with the given `opacity`.
 ///
 /// Replaces the overlay if one is already shown. The overlay is topmost,
 /// never takes focus, and closes when escape is pressed (see
@@ -222,6 +236,7 @@ pub(crate) fn show_overlay(
   sections: &[OverlaySection],
   working_area: &Rect,
   scale_factor: f32,
+  opacity: &OpacityValue,
 ) -> crate::Result<()> {
   close_overlay();
 
@@ -229,135 +244,88 @@ pub(crate) fn show_overlay(
 
   let metrics = Metrics {
     padding: scale(PADDING),
-    section_gap: scale(SECTION_GAP),
     title_height: scale(TITLE_HEIGHT),
     line_height: scale(LINE_HEIGHT),
     cell_gap: scale(CELL_GAP),
     hint_padding: scale(HINT_PADDING),
     hint_max_width: scale(HINT_MAX_WIDTH),
-    list_action_max_width: scale(LIST_ACTION_MAX_WIDTH),
   };
-
-  let max_width = working_area.width() * MAX_AREA_PERCENT / 100;
-  let max_height = working_area.height() * MAX_AREA_PERCENT / 100;
-  let content_width = max_width - 2 * metrics.padding;
-
-  let title_font = create_font(scale(FONT_SIZE), FW_SEMIBOLD.0)?;
-  let text_font = create_font(scale(FONT_SIZE), FW_NORMAL.0)?;
 
   let physical_keys = physical_keys();
-  let (keyboards, lists) =
-    measure_sections(sections, &physical_keys, title_font, text_font)?;
 
-  let list_rows = flow_rows(
-    &lists
-      .iter()
-      .map(|list| list.width(&metrics))
-      .collect::<Vec<_>>(),
-    content_width,
-    metrics.section_gap,
-  );
-
-  let lists_height = list_rows
+  // The window is sized for the section with the most extra lines, so
+  // that it doesn't change size when switching sections.
+  let extra_count = sections
     .iter()
-    .map(|row| row_height(&lists[row.clone()], &metrics))
-    .sum::<i32>()
-    + gaps(list_rows.len()) * metrics.section_gap;
+    .map(|section| {
+      extra_bindings(&section.bindings, &physical_keys).count()
+    })
+    .max()
+    .unwrap_or(0);
 
-  let keyboards_max_height = if lists.is_empty() {
-    max_height
-  } else {
-    max_height - lists_height - metrics.section_gap
-  };
-
-  let (column_count, key_size) = fit_grid(
-    &keyboards
-      .iter()
-      .map(|(_, extras)| extras.lines.len())
-      .collect::<Vec<_>>(),
+  let key_size = fit_key_size(
     &metrics,
-    max_width,
-    keyboards_max_height,
-    MAX_KEY_SIZE * scale_factor,
+    extra_count,
+    working_area.width() * AREA_PERCENT / 100,
+    working_area.height() * AREA_PERCENT / 100,
   );
+
+  let font_key_size = key_size.min(FONT_KEY_SIZE * scale_factor);
 
   let fonts = Fonts {
-    title: title_font,
-    text: text_font,
+    title: create_font(scale(FONT_SIZE), FW_SEMIBOLD.0)?,
+    text: create_font(scale(FONT_SIZE), FW_NORMAL.0)?,
     legend: create_font(
-      to_px(key_size * LEGEND_FONT_SIZE).max(1),
+      to_px(font_key_size * LEGEND_FONT_SIZE).max(1),
       FW_SEMIBOLD.0,
     )?,
     action: create_font(
-      to_px(key_size * ACTION_FONT_SIZE).max(1),
+      to_px(font_key_size * ACTION_FONT_SIZE).max(1),
       FW_NORMAL.0,
     )?,
   };
 
-  let mut layout = Layout {
-    items: Vec::new(),
-    hints: Vec::new(),
-    metrics: &metrics,
-  };
-
-  let (keyboards_width, keyboards_height) = layout.push_keyboards(
-    &keyboards,
-    &physical_keys,
-    column_count,
-    key_size,
-  );
-
-  let lists_top = if keyboards.is_empty() {
-    metrics.padding
-  } else {
-    metrics.padding + keyboards_height + metrics.section_gap
-  };
-
-  let lists_width = layout.push_lists(&lists, &list_rows, lists_top);
-
-  let width = 2 * metrics.padding + keyboards_width.max(lists_width);
-  let height = if lists.is_empty() {
-    2 * metrics.padding + keyboards_height
-  } else {
-    lists_top + lists_height + metrics.padding
-  };
-
-  let Layout { items, hints, .. } = layout;
+  let width = 2 * metrics.padding + to_px(KEYBOARD_WIDTH * key_size);
+  let height = 2 * metrics.padding
+    + metrics.title_height
+    + to_px(KEYBOARD_HEIGHT * key_size)
+    + metrics.line_height * i32::try_from(extra_count).unwrap_or(0);
 
   let rect =
     Rect::from_xy(0, 0, width, height).translate_to_center(working_area);
 
-  open_window(&rect, fonts, metrics, items, hints)
-}
+  let mut state = OverlayState {
+    hwnd: create_window(&rect)?,
+    fonts,
+    brushes: Brushes {
+      background: unsafe { CreateSolidBrush(BACKGROUND_COLOR) },
+      idle_key: unsafe { CreateSolidBrush(IDLE_KEY_COLOR) },
+      bound_key: unsafe { CreateSolidBrush(BOUND_KEY_COLOR) },
+      available_key: unsafe { CreateSolidBrush(AVAILABLE_KEY_COLOR) },
+      held_key: unsafe { CreateSolidBrush(ACCENT_COLOR) },
+      hint: unsafe { CreateSolidBrush(HINT_COLOR) },
+    },
+    metrics,
+    sections: sections.to_vec(),
+    physical_keys,
+    key_size,
+    held: held_modifiers(None),
+    items: Vec::new(),
+    hints: Vec::new(),
+    hovered: None,
+  };
 
-/// Creates and shows the overlay window at `rect`, with the given
-/// content.
-fn open_window(
-  rect: &Rect,
-  fonts: Fonts,
-  metrics: Metrics,
-  items: Vec<DrawItem>,
-  hints: Vec<Hint>,
-) -> crate::Result<()> {
-  let hwnd = create_window(rect)?;
+  let hwnd = state.hwnd;
+  let layout_result = state.relayout();
 
-  OVERLAY.with(|overlay| {
-    *overlay.borrow_mut() = Some(OverlayState {
-      hwnd,
-      fonts,
-      brushes: Brushes {
-        background: unsafe { CreateSolidBrush(BACKGROUND_COLOR) },
-        idle_key: unsafe { CreateSolidBrush(IDLE_KEY_COLOR) },
-        bound_key: unsafe { CreateSolidBrush(BOUND_KEY_COLOR) },
-        held_key: unsafe { CreateSolidBrush(ACCENT_COLOR) },
-        hint: unsafe { CreateSolidBrush(HINT_COLOR) },
-      },
-      metrics,
-      items,
-      hints,
-      hovered: None,
-    });
-  });
+  // State is stored before checking the layout, so that its resources
+  // are released in `WM_DESTROY` on failure.
+  OVERLAY.with(|overlay| *overlay.borrow_mut() = Some(state));
+
+  if let Err(err) = layout_result {
+    close_overlay();
+    return Err(err);
+  }
 
   unsafe {
     // Rounded corners are a cosmetic Windows 11 feature, so failure is
@@ -373,6 +341,12 @@ fn open_window(
       },
     );
 
+    SetLayeredWindowAttributes(
+      hwnd,
+      COLORREF(0),
+      opacity.to_alpha(),
+      LWA_ALPHA,
+    )?;
     ShowWindow(hwnd, SW_SHOWNOACTIVATE);
   }
 
@@ -401,90 +375,146 @@ pub(crate) fn close_overlay() -> bool {
   true
 }
 
-/// Whether pressing `key` is done with `physical_key`.
+/// Switches the shown section after the key of `key_code` was pressed or
+/// released, if it is a modifier and an overlay is shown.
+///
+/// Must be called on the event loop thread.
+pub(crate) fn update_held_modifiers(key_code: KeyCode, is_down: bool) {
+  let is_modifier = MODIFIER_KEYS
+    .iter()
+    .any(|key| KeyCode::try_from(*key).is_ok_and(|code| code == key_code));
+
+  if !is_modifier {
+    return;
+  }
+
+  OVERLAY.with(|overlay| {
+    let mut overlay = overlay.borrow_mut();
+    let Some(state) = overlay.as_mut() else {
+      return;
+    };
+
+    // Key repeats of held modifiers don't change anything.
+    let held = held_modifiers(Some((key_code, is_down)));
+    if held == state.held {
+      return;
+    }
+
+    state.held = held;
+
+    if let Err(err) = state.relayout() {
+      tracing::warn!("Failed to lay out overlay: {err}");
+    }
+
+    unsafe { InvalidateRect(state.hwnd, None, false) };
+  });
+}
+
+/// Modifier keys currently held down, in the order of `MODIFIER_KEYS`.
+///
+/// `changed` (a key code and whether it is down) overrides the queried
+/// key state, since the keyboard hook is called before it is updated.
+fn held_modifiers(changed: Option<(KeyCode, bool)>) -> Vec<Key> {
+  MODIFIER_KEYS
+    .into_iter()
+    .filter(|key| {
+      let Ok(code) = KeyCode::try_from(*key) else {
+        return false;
+      };
+
+      match changed {
+        Some((changed_code, is_down)) if changed_code == code => is_down,
+        // The most significant bit is set if the key is down.
+        _ => (unsafe { GetAsyncKeyState(i32::from(code.0)) }) < 0,
+      }
+    })
+    .collect()
+}
+
+/// Whether `binding_key` of a keybinding is matched by pressing `key`.
 ///
 /// Generic modifiers (e.g. `Key::Alt`) match both their left and right
 /// keys.
-fn physical_key_matches(physical_key: &PhysicalKey, key: Key) -> bool {
-  let Some(physical) = physical_key.key else {
-    return false;
-  };
-
-  physical == key
+fn key_matches(binding_key: Key, key: Key) -> bool {
+  binding_key == key
     || MODIFIER_GROUPS.iter().any(|(generic, variants)| {
-      *generic == key && variants.contains(&physical)
+      *generic == binding_key && variants.contains(&key)
     })
 }
 
-/// A keyboard section, with the list of its bindings whose keys aren't
-/// on the keyboard picture.
-type KeyboardSection<'a> = (&'a OverlaySection, List<'a>);
+/// Whether pressing `key` is done with `physical_key`.
+fn physical_key_matches(physical_key: &PhysicalKey, key: Key) -> bool {
+  physical_key
+    .key
+    .is_some_and(|physical| key_matches(key, physical))
+}
 
-/// Measures the sections' lists.
+/// Whether all `keys` are matched by some of `held_keys`.
+fn covers(held_keys: &[Key], keys: &[Key]) -> bool {
+  keys.iter().all(|key| {
+    held_keys
+      .iter()
+      .any(|held_key| key_matches(*held_key, *key))
+  })
+}
+
+/// Section to show while the `held` modifiers are down.
 ///
-/// Returns the keyboard sections with their extra lines, and the list
-/// sections, each in their original order.
-fn measure_sections<'a>(
+/// Returns the section whose held keys are exactly matched by `held`, or
+/// the first section with the fewest held keys if `held` is empty.
+fn displayed_section<'a>(
   sections: &'a [OverlaySection],
-  physical_keys: &[PhysicalKey],
-  title_font: HFONT,
-  text_font: HFONT,
-) -> crate::Result<(Vec<KeyboardSection<'a>>, Vec<List<'a>>)> {
-  let hdc = unsafe { CreateCompatibleDC(None) };
+  held: &[Key],
+) -> Option<&'a OverlaySection> {
+  if held.is_empty() {
+    return sections
+      .iter()
+      .min_by_key(|section| section.held_keys.len());
+  }
 
-  let keyboards = sections
+  sections.iter().find(|section| {
+    covers(&section.held_keys, held)
+      && section.held_keys.iter().all(|held_key| {
+        held.iter().any(|key| key_matches(*held_key, *key))
+      })
+  })
+}
+
+/// Whether also holding `key` with the `held` modifiers leads to a
+/// section, possibly requiring more modifiers.
+fn is_available(
+  sections: &[OverlaySection],
+  held: &[Key],
+  key: Key,
+) -> bool {
+  let keys = [held, &[key]].concat();
+
+  sections
     .iter()
-    .filter(|section| section.style == OverlaySectionStyle::Keyboard)
-    .map(|section| {
-      let extras = section.bindings.iter().filter(|(key, _)| {
-        !physical_keys
-          .iter()
-          .any(|physical| physical_key_matches(physical, *key))
-      });
+    .any(|section| covers(&section.held_keys, &keys))
+}
 
-      let extras = measure_list(
-        hdc,
-        title_font,
-        text_font,
-        None,
-        extras,
-        physical_keys,
-      );
-
-      (section, extras)
-    })
-    .collect();
-
-  let lists = sections
-    .iter()
-    .filter(|section| section.style == OverlaySectionStyle::List)
-    .map(|section| {
-      measure_list(
-        hdc,
-        title_font,
-        text_font,
-        Some(&section.title),
-        &section.bindings,
-        physical_keys,
-      )
-    })
-    .collect();
-
-  unsafe { DeleteDC(hdc) }.ok()?;
-
-  Ok((keyboards, lists))
+/// Bindings whose keys aren't on the keyboard picture.
+fn extra_bindings<'a>(
+  bindings: &'a [(Key, String)],
+  physical_keys: &'a [PhysicalKey],
+) -> impl Iterator<Item = &'a (Key, String)> {
+  bindings.iter().filter(|(key, _)| {
+    !physical_keys
+      .iter()
+      .any(|physical| physical_key_matches(physical, *key))
+  })
 }
 
 /// Measures a list of `bindings`, labelling each key with its legend on
 /// the keyboard picture if it has one.
 fn measure_list<'a>(
-  hdc: HDC,
-  title_font: HFONT,
   text_font: HFONT,
-  title: Option<&'a str>,
   bindings: impl IntoIterator<Item = &'a (Key, String)>,
   physical_keys: &[PhysicalKey],
-) -> List<'a> {
+) -> crate::Result<List<'a>> {
+  let hdc = unsafe { CreateCompatibleDC(None) };
+
   let lines = bindings
     .into_iter()
     .map(|(key, action)| {
@@ -507,124 +537,38 @@ fn measure_list<'a>(
     })
     .collect::<Vec<_>>();
 
-  List {
-    title,
-    title_width: title
-      .map_or(0, |title| text_width(hdc, title_font, title)),
-    key_width: lines
-      .iter()
-      .map(|line| text_width(hdc, text_font, &line.key))
-      .max()
-      .unwrap_or(0),
-    action_width: lines
-      .iter()
-      .map(|line| line.action_width)
-      .max()
-      .unwrap_or(0),
-    lines,
-  }
-}
-
-/// Splits items of the given widths into rows of at most `max_width`,
-/// separated by `gap`.
-///
-/// Returns the index ranges of each row. An item wider than `max_width`
-/// gets a row of its own.
-fn flow_rows(
-  widths: &[i32],
-  max_width: i32,
-  gap: i32,
-) -> Vec<Range<usize>> {
-  let mut rows = Vec::new();
-  let mut start = 0;
-  let mut row_width = 0;
-
-  for (index, width) in widths.iter().enumerate() {
-    if index > start && row_width + gap + width > max_width {
-      rows.push(start..index);
-      start = index;
-    }
-
-    row_width = if index == start {
-      *width
-    } else {
-      row_width + gap + width
-    };
-  }
-
-  if start < widths.len() {
-    rows.push(start..widths.len());
-  }
-
-  rows
-}
-
-/// Height of a row of lists.
-fn row_height(lists: &[List], metrics: &Metrics) -> i32 {
-  lists
+  let key_width = lines
     .iter()
-    .map(|list| list.height(metrics))
+    .map(|line| text_width(hdc, text_font, &line.key))
     .max()
-    .unwrap_or(0)
+    .unwrap_or(0);
+
+  unsafe { DeleteDC(hdc) }.ok()?;
+
+  Ok(List { lines, key_width })
 }
 
-/// Picks the number of grid columns that gives the largest keyboards
-/// within `max_width` and `max_height`.
+/// Largest key size that fits the keyboard and `extra_count` lines below
+/// it within `max_width` and `max_height`.
 ///
-/// `extra_counts` holds the number of extra lines below each section's
-/// keyboard.
-///
-/// Returns the column count and the key size in physical pixels, at most
-/// `max_key_size`.
-fn fit_grid(
-  extra_counts: &[usize],
+/// Returns the key size in physical pixels.
+fn fit_key_size(
   metrics: &Metrics,
+  extra_count: usize,
   max_width: i32,
   max_height: i32,
-  max_key_size: f32,
-) -> (usize, f32) {
-  let mut best = (1, 0.);
+) -> f32 {
+  let fixed_width = 2 * metrics.padding;
+  let fixed_height = 2 * metrics.padding
+    + metrics.title_height
+    + metrics.line_height * i32::try_from(extra_count).unwrap_or(0);
 
-  for column_count in 1..=extra_counts.len() {
-    let rows = extra_counts.chunks(column_count).collect::<Vec<_>>();
-
-    let fixed_width =
-      2 * metrics.padding + gaps(column_count) * metrics.section_gap;
-    let fixed_height = 2 * metrics.padding
-      + gaps(rows.len()) * metrics.section_gap
-      + rows
-        .iter()
-        .map(|row| row_fixed_height(row, metrics))
-        .sum::<i32>();
-
-    #[allow(clippy::cast_precision_loss)]
-    let key_size = f32::min(
-      (max_width - fixed_width) as f32
-        / (column_count as f32 * KEYBOARD_WIDTH),
-      (max_height - fixed_height) as f32
-        / (rows.len() as f32 * KEYBOARD_HEIGHT),
-    )
-    .min(max_key_size);
-
-    if key_size > best.1 {
-      best = (column_count, key_size);
-    }
-  }
-
-  best
-}
-
-/// Number of gaps between `count` items.
-fn gaps(count: usize) -> i32 {
-  i32::try_from(count.saturating_sub(1)).unwrap_or(0)
-}
-
-/// Height of a grid row, excluding its keyboards.
-fn row_fixed_height(row_extra_counts: &[usize], metrics: &Metrics) -> i32 {
-  let extra_lines = row_extra_counts.iter().copied().max().unwrap_or(0);
-
-  metrics.title_height
-    + metrics.line_height * i32::try_from(extra_lines).unwrap_or(0)
+  #[allow(clippy::cast_precision_loss)]
+  f32::min(
+    (max_width - fixed_width) as f32 / KEYBOARD_WIDTH,
+    (max_height - fixed_height) as f32 / KEYBOARD_HEIGHT,
+  )
+  .max(1.)
 }
 
 /// Rounds a size in physical pixels.
@@ -633,6 +577,65 @@ fn to_px(value: f32) -> i32 {
   #[allow(clippy::cast_possible_truncation)]
   let px = value.round() as i32;
   px
+}
+
+impl OverlayState {
+  /// Lays out the keyboard of the section to show while the `held`
+  /// modifiers are down.
+  ///
+  /// Without a matching section, shows an empty keyboard with the held
+  /// modifiers highlighted.
+  fn relayout(&mut self) -> crate::Result<()> {
+    let view = match displayed_section(&self.sections, &self.held) {
+      Some(section) => (
+        section.title.as_str(),
+        section.held_keys.as_slice(),
+        section.bindings.as_slice(),
+      ),
+      None => (NO_KEYBINDINGS_TITLE, self.held.as_slice(), &[][..]),
+    };
+
+    let available_keys = MODIFIER_KEYS
+      .into_iter()
+      .filter(|key| {
+        !self.held.contains(key)
+          && is_available(&self.sections, &self.held, *key)
+      })
+      .collect::<Vec<_>>();
+
+    let view = KeyboardView {
+      title: view.0,
+      held_keys: view.1,
+      bindings: view.2,
+      available_keys: &available_keys,
+    };
+
+    let extras = measure_list(
+      self.fonts.text,
+      extra_bindings(view.bindings, &self.physical_keys),
+      &self.physical_keys,
+    )?;
+
+    let mut layout = Layout {
+      items: Vec::new(),
+      hints: Vec::new(),
+      metrics: &self.metrics,
+    };
+
+    layout.push_keyboard(
+      &view,
+      &extras,
+      &self.physical_keys,
+      self.key_size,
+    );
+
+    let Layout { items, hints, .. } = layout;
+    self.items = items;
+    self.hints = hints;
+    self.hovered = None;
+
+    Ok(())
+  }
 }
 
 /// Items and hints of the overlay, positioned relative to its top-left
@@ -644,119 +647,56 @@ struct Layout<'a> {
 }
 
 impl Layout<'_> {
-  /// Positions the keyboards with their titles and extra lines in a grid
-  /// of `column_count` columns, below the top padding.
-  ///
-  /// Returns the width and height of the grid.
-  fn push_keyboards(
+  /// Positions the keyboard of `view` with its title and `extras` below
+  /// it, within the padding.
+  fn push_keyboard(
     &mut self,
-    keyboards: &[KeyboardSection],
+    view: &KeyboardView,
+    extras: &List,
     physical_keys: &[PhysicalKey],
-    column_count: usize,
     key_size: f32,
-  ) -> (i32, i32) {
-    if keyboards.is_empty() {
-      return (0, 0);
-    }
-
+  ) {
     let metrics = self.metrics;
     let keyboard_width = to_px(KEYBOARD_WIDTH * key_size);
-    let keyboard_height = to_px(KEYBOARD_HEIGHT * key_size);
-    let mut y = metrics.padding;
+    let keyboard_top = metrics.padding + metrics.title_height;
 
-    for row in keyboards.chunks(column_count) {
-      let mut x = metrics.padding;
+    self.push_title(view.title, metrics.padding, keyboard_width);
 
-      for (section, extras) in row {
-        self.push_title(&section.title, x, y, keyboard_width);
-
-        let keyboard_top = y + metrics.title_height;
-
-        for physical_key in physical_keys {
-          self.push_key(physical_key, section, key_size, x, keyboard_top);
-        }
-
-        self.push_lines(
-          extras,
-          x,
-          keyboard_top + keyboard_height,
-          keyboard_width,
-        );
-
-        x += keyboard_width + metrics.section_gap;
-      }
-
-      let extra_counts = row
-        .iter()
-        .map(|(_, extras)| extras.lines.len())
-        .collect::<Vec<_>>();
-
-      y += keyboard_height
-        + row_fixed_height(&extra_counts, metrics)
-        + metrics.section_gap;
+    for physical_key in physical_keys {
+      self.push_key(
+        physical_key,
+        view,
+        key_size,
+        metrics.padding,
+        keyboard_top,
+      );
     }
 
-    let column_count = column_count.min(keyboards.len());
-    let width = i32::try_from(column_count).unwrap_or(1) * keyboard_width
-      + gaps(column_count) * metrics.section_gap;
-
-    (width, y - metrics.section_gap - metrics.padding)
+    self.push_lines(
+      extras,
+      metrics.padding,
+      keyboard_top + to_px(KEYBOARD_HEIGHT * key_size),
+      keyboard_width,
+    );
   }
 
-  /// Positions the lists in `rows`, starting at `top`.
-  ///
-  /// Returns the width of the widest row.
-  fn push_lists(
-    &mut self,
-    lists: &[List],
-    rows: &[Range<usize>],
-    top: i32,
-  ) -> i32 {
-    let metrics = self.metrics;
-    let mut y = top;
-    let mut max_width = 0;
+  /// Adds the title, `width` wide, at `x` below the top padding.
+  fn push_title(&mut self, title: &str, x: i32, width: i32) {
+    let top = self.metrics.padding;
 
-    for row in rows {
-      let mut x = metrics.padding;
-
-      for list in &lists[row.clone()] {
-        let width = list.width(metrics);
-
-        if let Some(title) = list.title {
-          self.push_title(title, x, y, width);
-        }
-
-        let lines_top = y + list.height(metrics)
-          - metrics.line_height
-            * i32::try_from(list.lines.len()).unwrap_or(0);
-
-        self.push_lines(list, x, lines_top, width);
-        x += width + metrics.section_gap;
-      }
-
-      max_width = max_width.max(x - metrics.section_gap - metrics.padding);
-      y += row_height(&lists[row.clone()], metrics) + metrics.section_gap;
-    }
-
-    max_width
-  }
-
-  /// Adds a section title.
-  fn push_title(&mut self, title: &str, x: i32, y: i32, width: i32) {
     self.items.push(DrawItem {
       kind: ItemKind::Title,
       rect: RECT {
         left: x,
-        top: y,
+        top,
         right: x + width,
-        bottom: y + self.metrics.title_height,
+        bottom: top + self.metrics.title_height,
       },
       text: title.encode_utf16().collect(),
     });
   }
 
-  /// Adds the lines of `list` (without its title), `width` wide, from
-  /// (`x`, `y`).
+  /// Adds the lines of `list`, `width` wide, from (`x`, `y`).
   ///
   /// Truncated actions get a hint with their full text.
   fn push_lines(&mut self, list: &List, x: i32, y: i32, width: i32) {
@@ -798,33 +738,38 @@ impl Layout<'_> {
     }
   }
 
-  /// Adds the keycap, legend and action of `physical_key` for `section`,
+  /// Adds the keycap, legend and action of `physical_key` for `view`,
   /// with the keyboard's top-left corner at (`left`, `top`).
   ///
   /// Bound keys get a hint with the full action.
   fn push_key(
     &mut self,
     physical_key: &PhysicalKey,
-    section: &OverlaySection,
+    view: &KeyboardView,
     key_size: f32,
     left: i32,
     top: i32,
   ) {
-    let action = section
+    let action = view
       .bindings
       .iter()
       .find(|(key, _)| physical_key_matches(physical_key, *key))
       .map(|(_, action)| action);
 
-    let is_held = section
+    let is_held = view
       .held_keys
       .iter()
       .any(|key| physical_key_matches(physical_key, *key));
 
-    let state = match (is_held, action) {
-      (true, _) => KeyState::Held,
-      (false, Some(_)) => KeyState::Bound,
-      (false, None) => KeyState::Idle,
+    let is_available = physical_key
+      .key
+      .is_some_and(|key| view.available_keys.contains(&key));
+
+    let state = match (is_held, is_available, action) {
+      (true, _, _) => KeyState::Held,
+      (false, true, _) => KeyState::Available,
+      (false, false, Some(_)) => KeyState::Bound,
+      (false, false, None) => KeyState::Idle,
     };
 
     let margin = key_size * KEY_MARGIN;
@@ -947,7 +892,8 @@ fn create_window(rect: &Rect) -> crate::Result<HWND> {
     CreateWindowExW(
       // `WS_EX_NOACTIVATE` and `WS_EX_TOOLWINDOW` also keep the WM from
       // managing the window.
-      WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+      // `WS_EX_LAYERED` allows the window to be translucent.
+      WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
       w!("GlazeWMOverlay"),
       PCWSTR::null(),
       WS_POPUP,
@@ -994,6 +940,7 @@ fn paint(hwnd: HWND, state: &OverlayState) {
         let brush = match key_state {
           KeyState::Idle => brushes.idle_key,
           KeyState::Bound => brushes.bound_key,
+          KeyState::Available => brushes.available_key,
           KeyState::Held => brushes.held_key,
         };
 
@@ -1005,6 +952,7 @@ fn paint(hwnd: HWND, state: &OverlayState) {
         let color = match key_state {
           KeyState::Idle => DIM_TEXT_COLOR,
           KeyState::Bound => ACCENT_COLOR,
+          KeyState::Available => TEXT_COLOR,
           KeyState::Held => BACKGROUND_COLOR,
         };
 
@@ -1247,6 +1195,7 @@ unsafe extern "system" fn window_proc(
           background,
           idle_key,
           bound_key,
+          available_key,
           held_key,
           hint,
         } = state.brushes;
@@ -1255,7 +1204,14 @@ unsafe extern "system" fn window_proc(
           let _ = DeleteObject(font);
         }
 
-        for brush in [background, idle_key, bound_key, held_key, hint] {
+        for brush in [
+          background,
+          idle_key,
+          bound_key,
+          available_key,
+          held_key,
+          hint,
+        ] {
           let _ = DeleteObject(brush);
         }
       }
@@ -1272,47 +1228,91 @@ mod tests {
 
   const METRICS: Metrics = Metrics {
     padding: 0,
-    section_gap: 0,
     title_height: 0,
     line_height: 10,
     cell_gap: 0,
     hint_padding: 0,
     hint_max_width: 0,
-    list_action_max_width: 0,
   };
 
-  #[test]
-  fn fits_grid_to_largest_keys() {
-    let width = to_px(KEYBOARD_WIDTH * 100.);
-    let height = to_px(KEYBOARD_HEIGHT * 100.);
-
-    // A single keyboard fills the area, up to the maximum key size.
-    assert_eq!(fit_grid(&[0], &METRICS, width, height, 200.), (1, 100.));
-    assert_eq!(fit_grid(&[0], &METRICS, width, height, 50.), (1, 50.));
-
-    // Two keyboards in a wide area are placed side by side.
-    assert_eq!(
-      fit_grid(&[0, 0], &METRICS, 2 * width, height, 200.),
-      (2, 100.)
-    );
-
-    // Extra lines below a keyboard shrink its keys.
-    let (columns, key_size) =
-      fit_grid(&[0, 2], &METRICS, 2 * width, height, 200.);
-    assert_eq!(columns, 2);
-    assert!(key_size < 100.);
+  fn section(title: &str, held_keys: &[Key]) -> OverlaySection {
+    OverlaySection {
+      title: title.to_string(),
+      held_keys: held_keys.to_vec(),
+      bindings: Vec::new(),
+    }
   }
 
   #[test]
-  fn flows_items_into_rows() {
-    assert_eq!(flow_rows(&[], 100, 10), Vec::<Range<usize>>::new());
-    assert_eq!(flow_rows(&[40, 40, 40], 100, 10), vec![0..2, 2..3]);
-    assert_eq!(flow_rows(&[40, 50], 100, 10), vec![0..2]);
+  fn fits_key_size_to_area() {
+    let width = to_px(KEYBOARD_WIDTH * 100.);
+    let height = to_px(KEYBOARD_HEIGHT * 100.);
 
-    // Items wider than the row get a row of their own.
-    assert_eq!(
-      flow_rows(&[150, 40, 150], 100, 10),
-      vec![0..1, 1..2, 2..3]
+    // The keyboard fills the area, in its tightest dimension.
+    assert!((fit_key_size(&METRICS, 0, width, height) - 100.).abs() < 0.1);
+    assert!(
+      (fit_key_size(&METRICS, 0, width, 2 * height) - 100.).abs() < 0.1
     );
+
+    // Extra lines below the keyboard shrink its keys.
+    assert!(fit_key_size(&METRICS, 2, width, height) < 100.);
+  }
+
+  #[test]
+  fn displays_section_of_held_modifiers() {
+    let sections = [
+      section("Alt", &[Key::Alt]),
+      section("Ctrl", &[Key::Ctrl]),
+      section("Alt + Shift", &[Key::Alt, Key::LShift]),
+    ];
+    let title = |held: &[Key]| {
+      displayed_section(&sections, held)
+        .map(|section| section.title.as_str())
+    };
+
+    // Without held modifiers, the section with the fewest is shown.
+    assert_eq!(title(&[]), Some("Alt"));
+    assert_eq!(title(&[Key::RAlt]), Some("Alt"));
+    assert_eq!(title(&[Key::LAlt, Key::RAlt]), Some("Alt"));
+    assert_eq!(title(&[Key::LShift, Key::LAlt]), Some("Alt + Shift"));
+
+    // Held modifiers must match a section exactly.
+    assert_eq!(title(&[Key::RShift, Key::LAlt]), None);
+    assert_eq!(title(&[Key::LShift]), None);
+    assert_eq!(title(&[Key::LCtrl, Key::LAlt]), None);
+  }
+
+  #[test]
+  fn displays_section_with_fewest_held_keys_by_default() {
+    let sections = [
+      section("Alt + Shift", &[Key::Alt, Key::Shift]),
+      section("Ctrl", &[Key::Ctrl]),
+      section("Win", &[Key::Win]),
+    ];
+
+    assert_eq!(
+      displayed_section(&sections, &[]).map(|section| &section.title),
+      Some(&"Ctrl".to_string())
+    );
+    assert_eq!(displayed_section(&[], &[]), None);
+  }
+
+  #[test]
+  fn finds_available_modifiers() {
+    let sections = [
+      section("Alt", &[Key::Alt]),
+      section("Alt + Ctrl + Shift", &[Key::Alt, Key::Ctrl, Key::Shift]),
+    ];
+
+    assert!(is_available(&sections, &[], Key::LAlt));
+    assert!(is_available(&sections, &[], Key::RShift));
+    assert!(is_available(&sections, &[Key::LAlt], Key::RCtrl));
+    assert!(is_available(
+      &sections,
+      &[Key::LAlt, Key::LShift],
+      Key::LCtrl
+    ));
+    assert!(!is_available(&sections, &[], Key::LWin));
+    assert!(!is_available(&sections, &[Key::LAlt], Key::LWin));
   }
 }
